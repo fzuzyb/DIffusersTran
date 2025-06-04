@@ -90,7 +90,7 @@ class JointTransformerBlock(nn.Module):
     r"""
     A Transformer block following the MMDiT architecture, introduced in Stable Diffusion 3.
 
-    Reference: https://huggingface.co/papers/2403.03206
+    Reference: https://arxiv.org/abs/2403.03206
 
     Parameters:
         dim (`int`): The number of channels in the input and output.
@@ -612,6 +612,7 @@ class LuminaFeedForward(nn.Module):
         ffn_dim_multiplier: Optional[float] = None,
     ):
         super().__init__()
+        inner_dim = int(2 * inner_dim / 3)
         # custom hidden_size factor multiplier
         if ffn_dim_multiplier is not None:
             inner_dim = int(ffn_dim_multiplier * inner_dim)
@@ -892,8 +893,8 @@ class FreeNoiseTransformerBlock(nn.Module):
             The number of frames to be skipped before starting to process a new batch of `context_length` frames.
         weighting_scheme (`str`, defaults to `"pyramid"`):
             The weighting scheme to use for weighting averaging of processed latent frames. As described in the
-            Equation 9. of the [FreeNoise](https://huggingface.co/papers/2310.15169) paper, "pyramid" is the default
-            setting used.
+            Equation 9. of the [FreeNoise](https://arxiv.org/abs/2310.15169) paper, "pyramid" is the default setting
+            used.
     """
 
     def __init__(

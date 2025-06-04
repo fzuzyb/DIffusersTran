@@ -20,16 +20,8 @@ from transformers import CLIPTextModelWithProjection, CLIPTokenizer
 from ...image_processor import VaeImageProcessor
 from ...models import UVit2DModel, VQModel
 from ...schedulers import AmusedScheduler
-from ...utils import is_torch_xla_available, replace_example_docstring
+from ...utils import replace_example_docstring
 from ..pipeline_utils import DiffusionPipeline, ImagePipelineOutput
-
-
-if is_torch_xla_available():
-    import torch_xla.core.xla_model as xm
-
-    XLA_AVAILABLE = True
-else:
-    XLA_AVAILABLE = False
 
 
 EXAMPLE_DOC_STRING = """
@@ -74,9 +66,7 @@ class AmusedPipeline(DiffusionPipeline):
             transformer=transformer,
             scheduler=scheduler,
         )
-        self.vae_scale_factor = (
-            2 ** (len(self.vqvae.config.block_out_channels) - 1) if getattr(self, "vqvae", None) else 8
-        )
+        self.vae_scale_factor = 2 ** (len(self.vqvae.config.block_out_channels) - 1)
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor, do_normalize=False)
 
     @torch.no_grad()
@@ -131,7 +121,7 @@ class AmusedPipeline(DiffusionPipeline):
                 generation deterministic.
             latents (`torch.IntTensor`, *optional*):
                 Pre-generated tokens representing latent vectors in `self.vqvae`, to be used as inputs for image
-                generation. If not provided, the starting latents will be completely masked.
+                gneration. If not provided, the starting latents will be completely masked.
             prompt_embeds (`torch.Tensor`, *optional*):
                 Pre-generated text embeddings. Can be used to easily tweak text inputs (prompt weighting). If not
                 provided, text embeddings are generated from the `prompt` input argument. A single vector from the
@@ -160,10 +150,10 @@ class AmusedPipeline(DiffusionPipeline):
             micro_conditioning_aesthetic_score (`int`, *optional*, defaults to 6):
                 The targeted aesthetic score according to the laion aesthetic classifier. See
                 https://laion.ai/blog/laion-aesthetics/ and the micro-conditioning section of
-                https://huggingface.co/papers/2307.01952.
+                https://arxiv.org/abs/2307.01952.
             micro_conditioning_crop_coord (`Tuple[int]`, *optional*, defaults to (0, 0)):
                 The targeted height, width crop coordinates. See the micro-conditioning section of
-                https://huggingface.co/papers/2307.01952.
+                https://arxiv.org/abs/2307.01952.
             temperature (`Union[int, Tuple[int, int], List[int]]`, *optional*, defaults to (2, 0)):
                 Configures the temperature scheduler on `self.scheduler` see `AmusedScheduler#set_timesteps`.
 
@@ -306,9 +296,6 @@ class AmusedPipeline(DiffusionPipeline):
                     if callback is not None and i % callback_steps == 0:
                         step_idx = i // getattr(self.scheduler, "order", 1)
                         callback(step_idx, timestep, latents)
-
-                if XLA_AVAILABLE:
-                    xm.mark_step()
 
         if output_type == "latent":
             output = latents

@@ -28,7 +28,8 @@ from transformers import (
 
 from ...image_processor import PipelineImageInput, VaeImageProcessor
 from ...loaders import FluxIPAdapterMixin, FluxLoraLoaderMixin, FromSingleFileMixin, TextualInversionLoaderMixin
-from ...models import AutoencoderKL, FluxTransformer2DModel
+from ...models.autoencoders import AutoencoderKL
+from ...models.transformers import FluxTransformer2DModel
 from ...schedulers import FlowMatchEulerDiscreteScheduler
 from ...utils import (
     USE_PEFT_BACKEND,
@@ -75,7 +76,7 @@ def calculate_shift(
     base_seq_len: int = 256,
     max_seq_len: int = 4096,
     base_shift: float = 0.5,
-    max_shift: float = 1.15,
+    max_shift: float = 1.16,
 ):
     m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
     b = base_shift - m * base_seq_len
@@ -205,7 +206,9 @@ class FluxPipeline(
             image_encoder=image_encoder,
             feature_extractor=feature_extractor,
         )
-        self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1) if getattr(self, "vae", None) else 8
+        self.vae_scale_factor = (
+            2 ** (len(self.vae.config.block_out_channels) - 1) if hasattr(self, "vae") and self.vae is not None else 8
+        )
         # Flux latents are turned into 2x2 patches and packed. This means the latent width and height has to be divisible
         # by the patch size. So the vae scale factor is multiplied by the patch size to account for this
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor * 2)
@@ -405,28 +408,23 @@ class FluxPipeline(
             if not isinstance(ip_adapter_image, list):
                 ip_adapter_image = [ip_adapter_image]
 
-            if len(ip_adapter_image) != self.transformer.encoder_hid_proj.num_ip_adapters:
+            if len(ip_adapter_image) != len(self.transformer.encoder_hid_proj.image_projection_layers):
                 raise ValueError(
-                    f"`ip_adapter_image` must have same length as the number of IP Adapters. Got {len(ip_adapter_image)} images and {self.transformer.encoder_hid_proj.num_ip_adapters} IP Adapters."
+                    f"`ip_adapter_image` must have same length as the number of IP Adapters. Got {len(ip_adapter_image)} images and {len(self.transformer.encoder_hid_proj.image_projection_layers)} IP Adapters."
                 )
 
-            for single_ip_adapter_image in ip_adapter_image:
+            for single_ip_adapter_image, image_proj_layer in zip(
+                ip_adapter_image, self.transformer.encoder_hid_proj.image_projection_layers
+            ):
                 single_image_embeds = self.encode_image(single_ip_adapter_image, device, 1)
+
                 image_embeds.append(single_image_embeds[None, :])
         else:
-            if not isinstance(ip_adapter_image_embeds, list):
-                ip_adapter_image_embeds = [ip_adapter_image_embeds]
-
-            if len(ip_adapter_image_embeds) != self.transformer.encoder_hid_proj.num_ip_adapters:
-                raise ValueError(
-                    f"`ip_adapter_image_embeds` must have same length as the number of IP Adapters. Got {len(ip_adapter_image_embeds)} image embeds and {self.transformer.encoder_hid_proj.num_ip_adapters} IP Adapters."
-                )
-
             for single_image_embeds in ip_adapter_image_embeds:
                 image_embeds.append(single_image_embeds)
 
         ip_adapter_image_embeds = []
-        for single_image_embeds in image_embeds:
+        for i, single_image_embeds in enumerate(image_embeds):
             single_image_embeds = torch.cat([single_image_embeds] * num_images_per_prompt, dim=0)
             single_image_embeds = single_image_embeds.to(device=device)
             ip_adapter_image_embeds.append(single_image_embeds)
@@ -489,6 +487,14 @@ class FluxPipeline(
                 f"Cannot forward both `negative_prompt_2`: {negative_prompt_2} and `negative_prompt_embeds`:"
                 f" {negative_prompt_embeds}. Please make sure to only forward one of the two."
             )
+
+        if prompt_embeds is not None and negative_prompt_embeds is not None:
+            if prompt_embeds.shape != negative_prompt_embeds.shape:
+                raise ValueError(
+                    "`prompt_embeds` and `negative_prompt_embeds` must have the same shape when passed directly, but"
+                    f" got: `prompt_embeds` {prompt_embeds.shape} != `negative_prompt_embeds`"
+                    f" {negative_prompt_embeds.shape}."
+                )
 
         if prompt_embeds is not None and pooled_prompt_embeds is None:
             raise ValueError(
@@ -617,10 +623,6 @@ class FluxPipeline(
         return self._num_timesteps
 
     @property
-    def current_timestep(self):
-        return self._current_timestep
-
-    @property
     def interrupt(self):
         return self._interrupt
 
@@ -665,16 +667,7 @@ class FluxPipeline(
                 instead.
             prompt_2 (`str` or `List[str]`, *optional*):
                 The prompt or prompts to be sent to `tokenizer_2` and `text_encoder_2`. If not defined, `prompt` is
-                will be used instead.
-            negative_prompt (`str` or `List[str]`, *optional*):
-                The prompt or prompts not to guide the image generation. If not defined, one has to pass
-                `negative_prompt_embeds` instead. Ignored when not using guidance (i.e., ignored if `true_cfg_scale` is
-                not greater than `1`).
-            negative_prompt_2 (`str` or `List[str]`, *optional*):
-                The prompt or prompts not to guide the image generation to be sent to `tokenizer_2` and
-                `text_encoder_2`. If not defined, `negative_prompt` is used in all the text-encoders.
-            true_cfg_scale (`float`, *optional*, defaults to 1.0):
-                When > 1.0 and a provided `negative_prompt`, enables true classifier-free guidance.
+                will be used instead
             height (`int`, *optional*, defaults to self.unet.config.sample_size * self.vae_scale_factor):
                 The height in pixels of the generated image. This is set to 1024 by default for the best results.
             width (`int`, *optional*, defaults to self.unet.config.sample_size * self.vae_scale_factor):
@@ -686,12 +679,12 @@ class FluxPipeline(
                 Custom sigmas to use for the denoising process with schedulers which support a `sigmas` argument in
                 their `set_timesteps` method. If not defined, the default behavior when `num_inference_steps` is passed
                 will be used.
-            guidance_scale (`float`, *optional*, defaults to 3.5):
-                Guidance scale as defined in [Classifier-Free Diffusion
-                Guidance](https://huggingface.co/papers/2207.12598). `guidance_scale` is defined as `w` of equation 2.
-                of [Imagen Paper](https://huggingface.co/papers/2205.11487). Guidance scale is enabled by setting
-                `guidance_scale > 1`. Higher guidance scale encourages to generate images that are closely linked to
-                the text `prompt`, usually at the expense of lower image quality.
+            guidance_scale (`float`, *optional*, defaults to 7.0):
+                Guidance scale as defined in [Classifier-Free Diffusion Guidance](https://arxiv.org/abs/2207.12598).
+                `guidance_scale` is defined as `w` of equation 2. of [Imagen
+                Paper](https://arxiv.org/pdf/2205.11487.pdf). Guidance scale is enabled by setting `guidance_scale >
+                1`. Higher guidance scale encourages to generate images that are closely linked to the text `prompt`,
+                usually at the expense of lower image quality.
             num_images_per_prompt (`int`, *optional*, defaults to 1):
                 The number of images to generate per prompt.
             generator (`torch.Generator` or `List[torch.Generator]`, *optional*):
@@ -700,7 +693,7 @@ class FluxPipeline(
             latents (`torch.FloatTensor`, *optional*):
                 Pre-generated noisy latents, sampled from a Gaussian distribution, to be used as inputs for image
                 generation. Can be used to tweak the same generation with different prompts. If not provided, a latents
-                tensor will be generated by sampling using the supplied random `generator`.
+                tensor will ge generated by sampling using the supplied random `generator`.
             prompt_embeds (`torch.FloatTensor`, *optional*):
                 Pre-generated text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt weighting. If not
                 provided, text embeddings will be generated from `prompt` input argument.
@@ -718,14 +711,6 @@ class FluxPipeline(
                 Pre-generated image embeddings for IP-Adapter. It should be a list of length same as number of
                 IP-adapters. Each element should be a tensor of shape `(batch_size, num_images, emb_dim)`. If not
                 provided, embeddings are computed from the `ip_adapter_image` input argument.
-            negative_prompt_embeds (`torch.FloatTensor`, *optional*):
-                Pre-generated negative text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt
-                weighting. If not provided, negative_prompt_embeds will be generated from `negative_prompt` input
-                argument.
-            negative_pooled_prompt_embeds (`torch.FloatTensor`, *optional*):
-                Pre-generated negative pooled text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt
-                weighting. If not provided, pooled negative_prompt_embeds will be generated from `negative_prompt`
-                input argument.
             output_type (`str`, *optional*, defaults to `"pil"`):
                 The output format of the generate image. Choose between
                 [PIL](https://pillow.readthedocs.io/en/stable/): `PIL.Image.Image` or `np.array`.
@@ -775,7 +760,6 @@ class FluxPipeline(
 
         self._guidance_scale = guidance_scale
         self._joint_attention_kwargs = joint_attention_kwargs
-        self._current_timestep = None
         self._interrupt = False
 
         # 2. Define call parameters
@@ -791,10 +775,7 @@ class FluxPipeline(
         lora_scale = (
             self.joint_attention_kwargs.get("scale", None) if self.joint_attention_kwargs is not None else None
         )
-        has_neg_prompt = negative_prompt is not None or (
-            negative_prompt_embeds is not None and negative_pooled_prompt_embeds is not None
-        )
-        do_true_cfg = true_cfg_scale > 1 and has_neg_prompt
+        do_true_cfg = true_cfg_scale > 1 and negative_prompt is not None
         (
             prompt_embeds,
             pooled_prompt_embeds,
@@ -813,7 +794,7 @@ class FluxPipeline(
             (
                 negative_prompt_embeds,
                 negative_pooled_prompt_embeds,
-                negative_text_ids,
+                _,
             ) = self.encode_prompt(
                 prompt=negative_prompt,
                 prompt_2=negative_prompt_2,
@@ -843,10 +824,10 @@ class FluxPipeline(
         image_seq_len = latents.shape[1]
         mu = calculate_shift(
             image_seq_len,
-            self.scheduler.config.get("base_image_seq_len", 256),
-            self.scheduler.config.get("max_image_seq_len", 4096),
-            self.scheduler.config.get("base_shift", 0.5),
-            self.scheduler.config.get("max_shift", 1.15),
+            self.scheduler.config.base_image_seq_len,
+            self.scheduler.config.max_image_seq_len,
+            self.scheduler.config.base_shift,
+            self.scheduler.config.max_shift,
         )
         timesteps, num_inference_steps = retrieve_timesteps(
             self.scheduler,
@@ -869,13 +850,10 @@ class FluxPipeline(
             negative_ip_adapter_image is None and negative_ip_adapter_image_embeds is None
         ):
             negative_ip_adapter_image = np.zeros((width, height, 3), dtype=np.uint8)
-            negative_ip_adapter_image = [negative_ip_adapter_image] * self.transformer.encoder_hid_proj.num_ip_adapters
-
         elif (ip_adapter_image is None and ip_adapter_image_embeds is None) and (
             negative_ip_adapter_image is not None or negative_ip_adapter_image_embeds is not None
         ):
             ip_adapter_image = np.zeros((width, height, 3), dtype=np.uint8)
-            ip_adapter_image = [ip_adapter_image] * self.transformer.encoder_hid_proj.num_ip_adapters
 
         if self.joint_attention_kwargs is None:
             self._joint_attention_kwargs = {}
@@ -903,7 +881,6 @@ class FluxPipeline(
                 if self.interrupt:
                     continue
 
-                self._current_timestep = t
                 if image_embeds is not None:
                     self._joint_attention_kwargs["ip_adapter_image_embeds"] = image_embeds
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
@@ -930,7 +907,7 @@ class FluxPipeline(
                         guidance=guidance,
                         pooled_projections=negative_pooled_prompt_embeds,
                         encoder_hidden_states=negative_prompt_embeds,
-                        txt_ids=negative_text_ids,
+                        txt_ids=text_ids,
                         img_ids=latent_image_ids,
                         joint_attention_kwargs=self.joint_attention_kwargs,
                         return_dict=False,
@@ -962,10 +939,9 @@ class FluxPipeline(
                 if XLA_AVAILABLE:
                     xm.mark_step()
 
-        self._current_timestep = None
-
         if output_type == "latent":
             image = latents
+
         else:
             latents = self._unpack_latents(latents, height, width, self.vae_scale_factor)
             latents = (latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor

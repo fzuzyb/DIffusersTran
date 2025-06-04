@@ -65,11 +65,9 @@ class VQModelTests(ModelTesterMixin, UNetTesterMixin, unittest.TestCase):
         inputs_dict = self.dummy_input
         return init_dict, inputs_dict
 
-    @unittest.skip("Test not supported.")
     def test_forward_signature(self):
         pass
 
-    @unittest.skip("Test not supported.")
     def test_training(self):
         pass
 

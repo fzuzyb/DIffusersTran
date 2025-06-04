@@ -1,31 +1,26 @@
 1. 下载代码
-    Diffusers: git clone https://github.com/huggingface/diffusers.git
-    Transformers: git clone https://github.com/huggingface/transformers.git
-    Datasets: git clone https://github.com/huggingface/datasets.git
-    PEFT: https://github.com/huggingface/peft.git
+   DiffusersTrain: git clone https://github.com/fzuzyb/DIffusersTran.git
 2. 新建环境
-    python -m venv local_env 
+    python3 -m venv local_env 
     source local_venv/bin/activate
 3. 安装Transformers
-    python -m setup develop -i https://pypi.tuna.tsinghua.edu.cn/simple
-3. 安装Datasets
-    python -m setup develop -i https://pypi.tuna.tsinghua.edu.cn/simple
-    如果你的Python 版本 3.10,或者aiohttp安装不成功 
-    先 pip install aiohttp==3.9.3，再进行setup
-5. 安装accelerate
+    python3 -m setup develop -i https://pypi.tuna.tsinghua.edu.cn/simple
+4. 安装accelerate
     python -m pip install accelerate -i https://pypi.tuna.tsinghua.edu.cn/simple
-6. 安装Diffusers
+5. 安装Diffusers
     python -m setup develop -i https://pypi.tuna.tsinghua.edu.cn/simple
-7. 安装PEFT
+6. 安装PEFT
     python -m setup develop -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+
 7. 安装torchvision
-   python -m pip install torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2
+   python -m pip install torchvision
    #python -m pip install torchvision==0.17.0 -i https://pypi.tuna.tsinghua.edu.cn/simple
-   python -m pip install opencv-python==4.9.0.80 -i https://pypi.tuna.tsinghua.edu.cn/simple
-   python -m pip install scipy==1.12.0 -i https://pypi.tuna.tsinghua.edu.cn/simple
-   python -m pip install ipywidgets -i https://pypi.tuna.tsinghua.edu.cn/simple
-   python -m pip install matplotlib -i https://pypi.tuna.tsinghua.edu.cn/simple
-   python -m pip install xformers==0.0.20 -i https://pypi.tuna.tsinghua.edu.cn/simple
+   python3 -m pip install opencv-python==4.9.0.80 -i https://pypi.tuna.tsinghua.edu.cn/simple
+   python3 -m pip install scipy==1.12.0 -i https://pypi.tuna.tsinghua.edu.cn/simple
+   python3 -m pip install ipywidgets -i https://pypi.tuna.tsinghua.edu.cn/simple
+   python3 -m pip install matplotlib -i https://pypi.tuna.tsinghua.edu.cn/simple
+   python3 -m pip install xformers==0.0.20 -i https://pypi.tuna.tsinghua.edu.cn/simple
 8. 安装ALGOHUB
     python -m setup develop -i https://pypi.tuna.tsinghua.edu.cn/simple
     python -m pip install onnxruntime-gpu -i https://pypi.tuna.tsinghua.edu.cn/simple

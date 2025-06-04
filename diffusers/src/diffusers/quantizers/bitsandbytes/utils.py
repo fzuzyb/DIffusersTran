@@ -1,4 +1,4 @@
-# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
+# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -49,7 +49,7 @@ def _replace_with_bnb_linear(
     """
     Private method that wraps the recursion for module replacement.
 
-    Returns the converted model and a boolean that indicates if the conversion has been successful or not.
+    Returns the converted model and a boolean that indicates if the conversion has been successfull or not.
     """
     for name, module in model.named_children():
         if current_key_name is None:
@@ -121,9 +121,8 @@ def replace_with_bnb_linear(model, modules_to_not_convert=None, current_key_name
 
     References:
         * `bnb.nn.Linear8bit`: [LLM.int8(): 8-bit Matrix Multiplication for Transformers at
-          Scale](https://huggingface.co/papers/2208.07339)
-        * `bnb.nn.Linear4bit`: [QLoRA: Efficient Finetuning of Quantized
-          LLMs](https://huggingface.co/papers/2305.14314)
+          Scale](https://arxiv.org/abs/2208.07339)
+        * `bnb.nn.Linear4bit`: [QLoRA: Efficient Finetuning of Quantized LLMs](https://arxiv.org/abs/2305.14314)
 
     Parameters:
         model (`torch.nn.Module`):
@@ -140,12 +139,10 @@ def replace_with_bnb_linear(model, modules_to_not_convert=None, current_key_name
             models by reducing the precision of the weights and activations, thus making models more efficient in terms
             of both storage and computation.
     """
-    model, _ = _replace_with_bnb_linear(model, modules_to_not_convert, current_key_name, quantization_config)
-
-    has_been_replaced = any(
-        isinstance(replaced_module, (bnb.nn.Linear4bit, bnb.nn.Linear8bitLt))
-        for _, replaced_module in model.named_modules()
+    model, has_been_replaced = _replace_with_bnb_linear(
+        model, modules_to_not_convert, current_key_name, quantization_config
     )
+
     if not has_been_replaced:
         logger.warning(
             "You are loading your model in 8bit or 4bit but no linear modules were found in your model."
@@ -156,8 +153,8 @@ def replace_with_bnb_linear(model, modules_to_not_convert=None, current_key_name
     return model
 
 
-# Adapted from PEFT: https://github.com/huggingface/peft/blob/6d458b300fc2ed82e19f796b53af4c97d03ea604/src/peft/utils/integrations.py#L81
-def dequantize_bnb_weight(weight: "torch.nn.Parameter", state=None, dtype: "torch.dtype" = None):
+# Copied from PEFT: https://github.com/huggingface/peft/blob/47b3712898539569c02ec5b3ed4a6c36811331a1/src/peft/utils/integrations.py#L41
+def dequantize_bnb_weight(weight: "torch.nn.Parameter", state=None):
     """
     Helper function to dequantize 4bit or 8bit bnb weights.
 
@@ -172,26 +169,21 @@ def dequantize_bnb_weight(weight: "torch.nn.Parameter", state=None, dtype: "torc
 
     if cls_name == "Params4bit":
         output_tensor = bnb.functional.dequantize_4bit(weight.data, weight.quant_state)
-        msg = f"The model is going to be dequantized in {output_tensor.dtype} - if you want to upcast it to another dtype, make sure to pass the desired dtype when quantizing the model through `bnb_4bit_quant_type` argument of `BitsAndBytesConfig`"
-        if dtype:
-            msg = f"The model is going to be first dequantized in {output_tensor.dtype} and type-casted to {dtype}"
-            output_tensor = output_tensor.to(dtype)
-        logger.warning_once(msg)
+        logger.warning_once(
+            f"The model is going to be dequantized in {output_tensor.dtype} - if you want to upcast it to another dtype, make sure to pass the desired dtype when quantizing the model through `bnb_4bit_quant_type` argument of `BitsAndBytesConfig`"
+        )
         return output_tensor
 
     if state.SCB is None:
         state.SCB = weight.SCB
 
-    if hasattr(bnb.functional, "int8_vectorwise_dequant"):
-        # Use bitsandbytes API if available (requires v0.45.0+)
-        dequantized = bnb.functional.int8_vectorwise_dequant(weight.data, state.SCB)
-    else:
-        # Multiply by (scale/127) to dequantize.
-        dequantized = weight.data * state.SCB.view(-1, 1) * 7.874015718698502e-3
-
-    if dtype:
-        dequantized = dequantized.to(dtype)
-    return dequantized
+    im = torch.eye(weight.data.shape[-1]).contiguous().half().to(weight.device)
+    im, imt, SCim, SCimt, coo_tensorim = bnb.functional.double_quant(im)
+    im, Sim = bnb.functional.transform(im, "col32")
+    if state.CxB is None:
+        state.CxB, state.SB = bnb.functional.transform(weight.data, to_order=state.formatB)
+    out32, Sout32 = bnb.functional.igemmlt(im, state.CxB, Sim, state.SB)
+    return bnb.functional.mm_dequant(out32, Sout32, SCim, state.SCB, bias=None).t()
 
 
 def _create_accelerate_new_hook(old_hook):
@@ -213,7 +205,6 @@ def _create_accelerate_new_hook(old_hook):
 
 def _dequantize_and_replace(
     model,
-    dtype,
     modules_to_not_convert=None,
     current_key_name=None,
     quantization_config=None,
@@ -224,7 +215,7 @@ def _dequantize_and_replace(
     performance drop compared to the original model before quantization - use it only for specific usecases such as
     QLoRA adapters merging.
 
-    Returns the converted model and a boolean that indicates if the conversion has been successful or not.
+    Returns the converted model and a boolean that indicates if the conversion has been successfull or not.
     """
     quant_method = quantization_config.quantization_method()
 
@@ -253,7 +244,7 @@ def _dequantize_and_replace(
                 else:
                     state = None
 
-                new_module.weight = torch.nn.Parameter(dequantize_bnb_weight(module.weight, state, dtype))
+                new_module.weight = torch.nn.Parameter(dequantize_bnb_weight(module.weight, state))
 
                 if bias is not None:
                     new_module.bias = bias
@@ -272,10 +263,9 @@ def _dequantize_and_replace(
         if len(list(module.children())) > 0:
             _, has_been_replaced = _dequantize_and_replace(
                 module,
-                dtype=dtype,
-                modules_to_not_convert=modules_to_not_convert,
-                current_key_name=current_key_name,
-                quantization_config=quantization_config,
+                modules_to_not_convert,
+                current_key_name,
+                quantization_config,
                 has_been_replaced=has_been_replaced,
             )
         # Remove the last key for recursion
@@ -288,18 +278,15 @@ def dequantize_and_replace(
     modules_to_not_convert=None,
     quantization_config=None,
 ):
-    model, _ = _dequantize_and_replace(
+    model, has_been_replaced = _dequantize_and_replace(
         model,
-        dtype=model.dtype,
         modules_to_not_convert=modules_to_not_convert,
         quantization_config=quantization_config,
     )
-    has_been_replaced = any(
-        isinstance(replaced_module, torch.nn.Linear) for _, replaced_module in model.named_modules()
-    )
+
     if not has_been_replaced:
         logger.warning(
-            "Some linear modules were not dequantized. This could lead to unexpected behaviour. Please check your model."
+            "For some reason the model has not been properly dequantized. You might see unexpected behavior."
         )
 
     return model

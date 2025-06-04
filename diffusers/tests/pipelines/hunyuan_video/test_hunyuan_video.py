@@ -21,7 +21,6 @@ from transformers import CLIPTextConfig, CLIPTextModel, CLIPTokenizer, LlamaConf
 
 from diffusers import (
     AutoencoderKLHunyuanVideo,
-    FasterCacheConfig,
     FlowMatchEulerDiscreteScheduler,
     HunyuanVideoPipeline,
     HunyuanVideoTransformer3DModel,
@@ -31,20 +30,13 @@ from diffusers.utils.testing_utils import (
     torch_device,
 )
 
-from ..test_pipelines_common import (
-    FasterCacheTesterMixin,
-    PipelineTesterMixin,
-    PyramidAttentionBroadcastTesterMixin,
-    to_np,
-)
+from ..test_pipelines_common import PipelineTesterMixin, to_np
 
 
 enable_full_determinism()
 
 
-class HunyuanVideoPipelineFastTests(
-    PipelineTesterMixin, PyramidAttentionBroadcastTesterMixin, FasterCacheTesterMixin, unittest.TestCase
-):
+class HunyuanVideoPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
     pipeline_class = HunyuanVideoPipeline
     params = frozenset(["prompt", "height", "width", "guidance_scale", "prompt_embeds", "pooled_prompt_embeds"])
     batch_params = frozenset(["prompt"])
@@ -61,26 +53,16 @@ class HunyuanVideoPipelineFastTests(
 
     # there is no xformers processor for Flux
     test_xformers_attention = False
-    test_layerwise_casting = True
-    test_group_offloading = True
 
-    faster_cache_config = FasterCacheConfig(
-        spatial_attention_block_skip_range=2,
-        spatial_attention_timestep_skip_range=(-1, 901),
-        unconditional_batch_skip_range=2,
-        attention_weight_callback=lambda _: 0.5,
-        is_guidance_distilled=True,
-    )
-
-    def get_dummy_components(self, num_layers: int = 1, num_single_layers: int = 1):
+    def get_dummy_components(self):
         torch.manual_seed(0)
         transformer = HunyuanVideoTransformer3DModel(
             in_channels=4,
             out_channels=4,
             num_attention_heads=2,
             attention_head_dim=10,
-            num_layers=num_layers,
-            num_single_layers=num_single_layers,
+            num_layers=1,
+            num_single_layers=1,
             num_refiner_layers=1,
             patch_size=1,
             patch_size_t=1,
@@ -149,7 +131,7 @@ class HunyuanVideoPipelineFastTests(
 
         torch.manual_seed(0)
         text_encoder = LlamaModel(llama_text_encoder_config)
-        tokenizer = LlamaTokenizer.from_pretrained("finetrainers/dummy-hunyaunvideo", subfolder="tokenizer")
+        tokenizer = LlamaTokenizer.from_pretrained("hf-internal-testing/tiny-random-LlamaForCausalLM")
 
         torch.manual_seed(0)
         text_encoder_2 = CLIPTextModel(clip_text_encoder_config)
@@ -172,8 +154,10 @@ class HunyuanVideoPipelineFastTests(
         else:
             generator = torch.Generator(device=device).manual_seed(seed)
 
+        # Cannot test with dummy prompt because tokenizers are not configured correctly.
+        # TODO(aryan): create dummy tokenizers and using from hub
         inputs = {
-            "prompt": "dance monkey",
+            "prompt": "",
             "prompt_template": {
                 "template": "{}",
                 "crop_start": 0,

@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import gc
+import traceback
 import unittest
 
 import numpy as np
@@ -33,11 +34,14 @@ from diffusers import (
 )
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.testing_utils import (
-    backend_empty_cache,
     enable_full_determinism,
+    is_torch_compile,
     load_image,
+    load_numpy,
     require_accelerator,
-    require_torch_accelerator,
+    require_torch_2,
+    require_torch_gpu,
+    run_test_in_subprocess,
     slow,
     torch_device,
 )
@@ -73,6 +77,53 @@ def to_np(tensor):
     return tensor
 
 
+# Will be run via run_test_in_subprocess
+def _test_stable_diffusion_compile(in_queue, out_queue, timeout):
+    error = None
+    try:
+        _ = in_queue.get(timeout=timeout)
+
+        controlnet = ControlNetXSAdapter.from_pretrained(
+            "UmerHA/Testing-ConrolNetXS-SD2.1-canny", torch_dtype=torch.float16
+        )
+        pipe = StableDiffusionControlNetXSPipeline.from_pretrained(
+            "stabilityai/stable-diffusion-2-1-base",
+            controlnet=controlnet,
+            safety_checker=None,
+            torch_dtype=torch.float16,
+        )
+        pipe.to("cuda")
+        pipe.set_progress_bar_config(disable=None)
+
+        pipe.unet.to(memory_format=torch.channels_last)
+        pipe.unet = torch.compile(pipe.unet, mode="reduce-overhead", fullgraph=True)
+
+        generator = torch.Generator(device="cpu").manual_seed(0)
+        prompt = "bird"
+        image = load_image(
+            "https://huggingface.co/datasets/hf-internal-testing/diffusers-images/resolve/main/sd_controlnet/bird_canny.png"
+        ).resize((512, 512))
+
+        output = pipe(prompt, image, num_inference_steps=10, generator=generator, output_type="np")
+        image = output.images[0]
+
+        assert image.shape == (512, 512, 3)
+
+        expected_image = load_numpy(
+            "https://huggingface.co/datasets/hf-internal-testing/diffusers-images/resolve/main/sd_controlnet/bird_canny_out_full.npy"
+        )
+        expected_image = np.resize(expected_image, (512, 512, 3))
+
+        assert np.abs(expected_image - image).max() < 1.0
+
+    except Exception:
+        error = f"{traceback.format_exc()}"
+
+    results = {"error": error}
+    out_queue.put(results, timeout=timeout)
+    out_queue.join()
+
+
 class ControlNetXSPipelineFastTests(
     PipelineLatentTesterMixin,
     PipelineKarrasSchedulerTesterMixin,
@@ -87,8 +138,6 @@ class ControlNetXSPipelineFastTests(
     image_latents_params = TEXT_TO_IMAGE_IMAGE_PARAMS
 
     test_attention_slicing = False
-    test_layerwise_casting = True
-    test_group_offloading = True
 
     def get_dummy_components(self, time_cond_proj_dim=None):
         torch.manual_seed(0)
@@ -283,21 +332,14 @@ class ControlNetXSPipelineFastTests(
         output_device = pipe(**self.get_dummy_inputs(torch_device))[0]
         self.assertTrue(np.isnan(to_np(output_device)).sum() == 0)
 
-    def test_encode_prompt_works_in_isolation(self):
-        extra_required_param_value_dict = {
-            "device": torch.device(torch_device).type,
-            "do_classifier_free_guidance": self.get_dummy_inputs(device=torch_device).get("guidance_scale", 1.0) > 1.0,
-        }
-        return super().test_encode_prompt_works_in_isolation(extra_required_param_value_dict)
-
 
 @slow
-@require_torch_accelerator
+@require_torch_gpu
 class ControlNetXSPipelineSlowTests(unittest.TestCase):
     def tearDown(self):
         super().tearDown()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def test_canny(self):
         controlnet = ControlNetXSAdapter.from_pretrained(
@@ -306,7 +348,7 @@ class ControlNetXSPipelineSlowTests(unittest.TestCase):
         pipe = StableDiffusionControlNetXSPipeline.from_pretrained(
             "stabilityai/stable-diffusion-2-1-base", controlnet=controlnet, torch_dtype=torch.float16
         )
-        pipe.enable_model_cpu_offload(device=torch_device)
+        pipe.enable_model_cpu_offload()
         pipe.set_progress_bar_config(disable=None)
 
         generator = torch.Generator(device="cpu").manual_seed(0)
@@ -332,7 +374,7 @@ class ControlNetXSPipelineSlowTests(unittest.TestCase):
         pipe = StableDiffusionControlNetXSPipeline.from_pretrained(
             "stabilityai/stable-diffusion-2-1-base", controlnet=controlnet, torch_dtype=torch.float16
         )
-        pipe.enable_model_cpu_offload(device=torch_device)
+        pipe.enable_model_cpu_offload()
         pipe.set_progress_bar_config(disable=None)
 
         generator = torch.Generator(device="cpu").manual_seed(0)
@@ -350,3 +392,8 @@ class ControlNetXSPipelineSlowTests(unittest.TestCase):
         original_image = image[-3:, -3:, -1].flatten()
         expected_image = np.array([0.4844, 0.4937, 0.4956, 0.4663, 0.5039, 0.5044, 0.4565, 0.4883, 0.4941])
         assert np.allclose(original_image, expected_image, atol=1e-04)
+
+    @is_torch_compile
+    @require_torch_2
+    def test_stable_diffusion_compile(self):
+        run_test_in_subprocess(test_case=self, target_func=_test_stable_diffusion_compile, inputs=None)

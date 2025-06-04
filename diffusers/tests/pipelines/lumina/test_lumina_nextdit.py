@@ -5,16 +5,10 @@ import numpy as np
 import torch
 from transformers import AutoTokenizer, GemmaConfig, GemmaForCausalLM
 
-from diffusers import (
-    AutoencoderKL,
-    FlowMatchEulerDiscreteScheduler,
-    LuminaNextDiT2DModel,
-    LuminaPipeline,
-)
+from diffusers import AutoencoderKL, FlowMatchEulerDiscreteScheduler, LuminaNextDiT2DModel, LuminaText2ImgPipeline
 from diffusers.utils.testing_utils import (
-    backend_empty_cache,
     numpy_cosine_similarity_distance,
-    require_torch_accelerator,
+    require_torch_gpu,
     slow,
     torch_device,
 )
@@ -22,8 +16,8 @@ from diffusers.utils.testing_utils import (
 from ..test_pipelines_common import PipelineTesterMixin
 
 
-class LuminaPipelineFastTests(unittest.TestCase, PipelineTesterMixin):
-    pipeline_class = LuminaPipeline
+class LuminaText2ImgPipelinePipelineFastTests(unittest.TestCase, PipelineTesterMixin):
+    pipeline_class = LuminaText2ImgPipeline
     params = frozenset(
         [
             "prompt",
@@ -36,10 +30,6 @@ class LuminaPipelineFastTests(unittest.TestCase, PipelineTesterMixin):
         ]
     )
     batch_params = frozenset(["prompt", "negative_prompt"])
-
-    supports_dduf = False
-    test_layerwise_casting = True
-    test_group_offloading = True
 
     def get_dummy_components(self):
         torch.manual_seed(0)
@@ -100,26 +90,55 @@ class LuminaPipelineFastTests(unittest.TestCase, PipelineTesterMixin):
         }
         return inputs
 
+    def test_lumina_prompt_embeds(self):
+        pipe = self.pipeline_class(**self.get_dummy_components()).to(torch_device)
+        inputs = self.get_dummy_inputs(torch_device)
+
+        output_with_prompt = pipe(**inputs).images[0]
+
+        inputs = self.get_dummy_inputs(torch_device)
+        prompt = inputs.pop("prompt")
+
+        do_classifier_free_guidance = inputs["guidance_scale"] > 1
+        (
+            prompt_embeds,
+            prompt_attention_mask,
+            negative_prompt_embeds,
+            negative_prompt_attention_mask,
+        ) = pipe.encode_prompt(
+            prompt,
+            do_classifier_free_guidance=do_classifier_free_guidance,
+            device=torch_device,
+        )
+        output_with_embeds = pipe(
+            prompt_embeds=prompt_embeds,
+            prompt_attention_mask=prompt_attention_mask,
+            **inputs,
+        ).images[0]
+
+        max_diff = np.abs(output_with_prompt - output_with_embeds).max()
+        assert max_diff < 1e-4
+
     @unittest.skip("xformers attention processor does not exist for Lumina")
     def test_xformers_attention_forwardGenerator_pass(self):
         pass
 
 
 @slow
-@require_torch_accelerator
-class LuminaPipelineSlowTests(unittest.TestCase):
-    pipeline_class = LuminaPipeline
+@require_torch_gpu
+class LuminaText2ImgPipelineSlowTests(unittest.TestCase):
+    pipeline_class = LuminaText2ImgPipeline
     repo_id = "Alpha-VLLM/Lumina-Next-SFT-diffusers"
 
     def setUp(self):
         super().setUp()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def tearDown(self):
         super().tearDown()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def get_inputs(self, device, seed=0):
         if str(device).startswith("mps"):
@@ -137,7 +156,7 @@ class LuminaPipelineSlowTests(unittest.TestCase):
 
     def test_lumina_inference(self):
         pipe = self.pipeline_class.from_pretrained(self.repo_id, torch_dtype=torch.bfloat16)
-        pipe.enable_model_cpu_offload(device=torch_device)
+        pipe.enable_model_cpu_offload()
 
         inputs = self.get_inputs(torch_device)
 

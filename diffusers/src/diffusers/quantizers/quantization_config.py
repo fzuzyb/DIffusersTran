@@ -45,17 +45,6 @@ class QuantizationMethod(str, Enum):
     BITS_AND_BYTES = "bitsandbytes"
     GGUF = "gguf"
     TORCHAO = "torchao"
-    QUANTO = "quanto"
-
-
-if is_torchao_available():
-    from torchao.quantization.quant_primitives import MappingType
-
-    class TorchAoJSONEncoder(json.JSONEncoder):
-        def default(self, obj):
-            if isinstance(obj, MappingType):
-                return obj.name
-            return super().default(obj)
 
 
 @dataclass
@@ -75,7 +64,7 @@ class QuantizationConfigMixin:
         Args:
             config_dict (`Dict[str, Any]`):
                 Dictionary that will be used to instantiate the configuration object.
-            return_unused_kwargs (`bool`, *optional*, defaults to `False`):
+            return_unused_kwargs (`bool`,*optional*, defaults to `False`):
                 Whether or not to return a list of unused keyword arguments. Used for `from_pretrained` method in
                 `PreTrainedModel`.
             kwargs (`Dict[str, Any]`):
@@ -179,7 +168,7 @@ class BitsAndBytesConfig(QuantizationConfigMixin):
     This is a wrapper class about all possible attributes and features that you can play with a model that has been
     loaded using `bitsandbytes`.
 
-    This replaces `load_in_8bit` or `load_in_4bit` therefore both options are mutually exclusive.
+    This replaces `load_in_8bit` or `load_in_4bit`therefore both options are mutually exclusive.
 
     Currently only supports `LLM.int8()`, `FP4`, and `NF4` quantization. If more methods are added to `bitsandbytes`,
     then more arguments will be added to this class.
@@ -192,10 +181,10 @@ class BitsAndBytesConfig(QuantizationConfigMixin):
             `bitsandbytes`.
         llm_int8_threshold (`float`, *optional*, defaults to 6.0):
             This corresponds to the outlier threshold for outlier detection as described in `LLM.int8() : 8-bit Matrix
-            Multiplication for Transformers at Scale` paper: https://huggingface.co/papers/2208.07339 Any hidden states
-            value that is above this threshold will be considered an outlier and the operation on those values will be
-            done in fp16. Values are usually normally distributed, that is, most values are in the range [-3.5, 3.5],
-            but there are some exceptional systematic outliers that are very differently distributed for large models.
+            Multiplication for Transformers at Scale` paper: https://arxiv.org/abs/2208.07339 Any hidden states value
+            that is above this threshold will be considered an outlier and the operation on those values will be done
+            in fp16. Values are usually normally distributed, that is, most values are in the range [-3.5, 3.5], but
+            there are some exceptional systematic outliers that are very differently distributed for large models.
             These outliers are often in the interval [-60, -6] or [6, 60]. Int8 quantization works well for values of
             magnitude ~5, but beyond that, there is a significant performance penalty. A good default threshold is 6,
             but a lower threshold might be needed for more unstable models (small models, fine-tuning).
@@ -492,15 +481,8 @@ class TorchAoConfig(QuantizationConfigMixin):
 
         TORCHAO_QUANT_TYPE_METHODS = self._get_torchao_quant_type_to_method()
         if self.quant_type not in TORCHAO_QUANT_TYPE_METHODS.keys():
-            is_floating_quant_type = self.quant_type.startswith("float") or self.quant_type.startswith("fp")
-            if is_floating_quant_type and not self._is_cuda_capability_atleast_8_9():
-                raise ValueError(
-                    f"Requested quantization type: {self.quant_type} is not supported on GPUs with CUDA capability <= 8.9. You "
-                    f"can check the CUDA capability of your GPU using `torch.cuda.get_device_capability()`."
-                )
-
             raise ValueError(
-                f"Requested quantization type: {self.quant_type} is not supported or is an incorrect `quant_type` name. If you think the "
+                f"Requested quantization type: {self.quant_type} is not supported yet or is incorrect. If you think the "
                 f"provided quantization type should be supported, please open an issue at https://github.com/huggingface/diffusers/issues."
             )
 
@@ -670,13 +652,13 @@ class TorchAoConfig(QuantizationConfigMixin):
 
     def __repr__(self):
         r"""
-        Example of how this looks for `TorchAoConfig("uint4wo", group_size=32)`:
+        Example of how this looks for `TorchAoConfig("uint_a16w4", group_size=32)`:
 
         ```
         TorchAoConfig {
             "modules_to_not_convert": null,
             "quant_method": "torchao",
-            "quant_type": "uint4wo",
+            "quant_type": "uint_a16w4",
             "quant_type_kwargs": {
                 "group_size": 32
             }
@@ -684,41 +666,4 @@ class TorchAoConfig(QuantizationConfigMixin):
         ```
         """
         config_dict = self.to_dict()
-        return (
-            f"{self.__class__.__name__} {json.dumps(config_dict, indent=2, sort_keys=True, cls=TorchAoJSONEncoder)}\n"
-        )
-
-
-@dataclass
-class QuantoConfig(QuantizationConfigMixin):
-    """
-    This is a wrapper class about all possible attributes and features that you can play with a model that has been
-    loaded using `quanto`.
-
-    Args:
-        weights_dtype (`str`, *optional*, defaults to `"int8"`):
-            The target dtype for the weights after quantization. Supported values are ("float8","int8","int4","int2")
-       modules_to_not_convert (`list`, *optional*, default to `None`):
-            The list of modules to not quantize, useful for quantizing models that explicitly require to have some
-            modules left in their original precision (e.g. Whisper encoder, Llava encoder, Mixtral gate layers).
-    """
-
-    def __init__(
-        self,
-        weights_dtype: str = "int8",
-        modules_to_not_convert: Optional[List[str]] = None,
-        **kwargs,
-    ):
-        self.quant_method = QuantizationMethod.QUANTO
-        self.weights_dtype = weights_dtype
-        self.modules_to_not_convert = modules_to_not_convert
-
-        self.post_init()
-
-    def post_init(self):
-        r"""
-        Safety checker that arguments are correct
-        """
-        accepted_weights = ["float8", "int8", "int4", "int2"]
-        if self.weights_dtype not in accepted_weights:
-            raise ValueError(f"Only support weights in {accepted_weights} but found {self.weights_dtype}")
+        return f"{self.__class__.__name__} {json.dumps(config_dict, indent=2, sort_keys=True)}\n"

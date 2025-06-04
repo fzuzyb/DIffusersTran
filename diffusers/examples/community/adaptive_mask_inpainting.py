@@ -372,7 +372,7 @@ class AdaptiveMaskInpaintPipeline(
         self.register_adaptive_mask_model()
         self.register_adaptive_mask_settings()
 
-        if scheduler is not None and getattr(scheduler.config, "steps_offset", 1) != 1:
+        if hasattr(scheduler.config, "steps_offset") and scheduler.config.steps_offset != 1:
             deprecation_message = (
                 f"The configuration file of this scheduler: {scheduler} is outdated. `steps_offset`"
                 f" should be set to 1 instead of {scheduler.config.steps_offset}. Please make sure "
@@ -386,7 +386,7 @@ class AdaptiveMaskInpaintPipeline(
             new_config["steps_offset"] = 1
             scheduler._internal_dict = FrozenDict(new_config)
 
-        if scheduler is not None and getattr(scheduler.config, "skip_prk_steps", True) is False:
+        if hasattr(scheduler.config, "skip_prk_steps") and scheduler.config.skip_prk_steps is False:
             deprecation_message = (
                 f"The configuration file of this scheduler: {scheduler} has not set the configuration"
                 " `skip_prk_steps`. `skip_prk_steps` should be set to True in the configuration file. Please make"
@@ -416,14 +416,10 @@ class AdaptiveMaskInpaintPipeline(
                 " checker. If you do not want to use the safety checker, you can pass `'safety_checker=None'` instead."
             )
 
-        is_unet_version_less_0_9_0 = (
-            unet is not None
-            and hasattr(unet.config, "_diffusers_version")
-            and version.parse(version.parse(unet.config._diffusers_version).base_version) < version.parse("0.9.0.dev0")
-        )
-        is_unet_sample_size_less_64 = (
-            unet is not None and hasattr(unet.config, "sample_size") and unet.config.sample_size < 64
-        )
+        is_unet_version_less_0_9_0 = hasattr(unet.config, "_diffusers_version") and version.parse(
+            version.parse(unet.config._diffusers_version).base_version
+        ) < version.parse("0.9.0.dev0")
+        is_unet_sample_size_less_64 = hasattr(unet.config, "sample_size") and unet.config.sample_size < 64
         if is_unet_version_less_0_9_0 and is_unet_sample_size_less_64:
             deprecation_message = (
                 "The configuration file of the unet has set the default `sample_size` to smaller than"
@@ -442,7 +438,7 @@ class AdaptiveMaskInpaintPipeline(
             unet._internal_dict = FrozenDict(new_config)
 
         # Check shapes, assume num_channels_latents == 4, num_channels_mask == 1, num_channels_masked == 4
-        if unet is not None and unet.config.in_channels != 9:
+        if unet.config.in_channels != 9:
             logger.info(f"You have loaded a UNet with {unet.config.in_channels} input channels which.")
 
         self.register_modules(
@@ -454,7 +450,7 @@ class AdaptiveMaskInpaintPipeline(
             safety_checker=safety_checker,
             feature_extractor=feature_extractor,
         )
-        self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1) if getattr(self, "vae", None) else 8
+        self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
         self.register_to_config(requires_safety_checker=requires_safety_checker)
 
@@ -670,7 +666,7 @@ class AdaptiveMaskInpaintPipeline(
     def prepare_extra_step_kwargs(self, generator, eta):
         # prepare extra kwargs for the scheduler step, since not all schedulers have the same signature
         # eta (η) is only used with the DDIMScheduler, it will be ignored for other schedulers.
-        # eta corresponds to η in DDIM paper: https://huggingface.co/papers/2010.02502
+        # eta corresponds to η in DDIM paper: https://arxiv.org/abs/2010.02502
         # and should be between [0, 1]
 
         accepts_eta = "eta" in set(inspect.signature(self.scheduler.step).parameters.keys())
@@ -917,7 +913,7 @@ class AdaptiveMaskInpaintPipeline(
             num_images_per_prompt (`int`, *optional*, defaults to 1):
                 The number of images to generate per prompt.
             eta (`float`, *optional*, defaults to 0.0):
-                Corresponds to parameter eta (η) from the [DDIM](https://huggingface.co/papers/2010.02502) paper. Only applies
+                Corresponds to parameter eta (η) from the [DDIM](https://arxiv.org/abs/2010.02502) paper. Only applies
                 to the [`~schedulers.DDIMScheduler`], and is ignored in other schedulers.
             generator (`torch.Generator` or `List[torch.Generator]`, *optional*):
                 A [`torch.Generator`](https://pytorch.org/docs/stable/generated/torch.Generator.html) to make
@@ -1012,7 +1008,7 @@ class AdaptiveMaskInpaintPipeline(
 
         device = self._execution_device
         # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
-        # of the Imagen paper: https://huggingface.co/papers/2205.11487 . `guidance_scale = 1`
+        # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
         # corresponds to doing no classifier free guidance.
         do_classifier_free_guidance = guidance_scale > 1.0
 
@@ -1103,7 +1099,7 @@ class AdaptiveMaskInpaintPipeline(
                     f"Incorrect configuration settings! The config of `pipeline.unet`: {self.unet.config} expects"
                     f" {self.unet.config.in_channels} but received `num_channels_latents`: {num_channels_latents} +"
                     f" `num_channels_mask`: {num_channels_mask} + `num_channels_masked_image`: {num_channels_masked_image}"
-                    f" = {num_channels_latents + num_channels_masked_image + num_channels_mask}. Please verify the config of"
+                    f" = {num_channels_latents+num_channels_masked_image+num_channels_mask}. Please verify the config of"
                     " `pipeline.unet` or your `default_mask_image` or `image` input."
                 )
         elif num_channels_unet != 4:

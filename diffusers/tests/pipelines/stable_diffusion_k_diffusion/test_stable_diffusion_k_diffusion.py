@@ -20,32 +20,26 @@ import numpy as np
 import torch
 
 from diffusers import StableDiffusionKDiffusionPipeline
-from diffusers.utils.testing_utils import (
-    backend_empty_cache,
-    enable_full_determinism,
-    nightly,
-    require_torch_accelerator,
-    torch_device,
-)
+from diffusers.utils.testing_utils import enable_full_determinism, nightly, require_torch_gpu, torch_device
 
 
 enable_full_determinism()
 
 
 @nightly
-@require_torch_accelerator
+@require_torch_gpu
 class StableDiffusionPipelineIntegrationTests(unittest.TestCase):
     def setUp(self):
         # clean up the VRAM before each test
         super().setUp()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def tearDown(self):
         # clean up the VRAM after each test
         super().tearDown()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def test_stable_diffusion_1(self):
         sd_pipe = StableDiffusionKDiffusionPipeline.from_pretrained("CompVis/stable-diffusion-v1-4")

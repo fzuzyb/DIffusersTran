@@ -17,29 +17,26 @@ import inspect
 import unittest
 
 import numpy as np
-import pytest
 import torch
 from transformers import AutoTokenizer, T5EncoderModel
 
 from diffusers import AutoencoderKLMochi, FlowMatchEulerDiscreteScheduler, MochiPipeline, MochiTransformer3DModel
 from diffusers.utils.testing_utils import (
-    backend_empty_cache,
     enable_full_determinism,
-    nightly,
     numpy_cosine_similarity_distance,
-    require_big_accelerator,
-    require_torch_accelerator,
+    require_torch_gpu,
+    slow,
     torch_device,
 )
 
 from ..pipeline_params import TEXT_TO_IMAGE_BATCH_PARAMS, TEXT_TO_IMAGE_IMAGE_PARAMS, TEXT_TO_IMAGE_PARAMS
-from ..test_pipelines_common import FasterCacheTesterMixin, PipelineTesterMixin, to_np
+from ..test_pipelines_common import PipelineTesterMixin, to_np
 
 
 enable_full_determinism()
 
 
-class MochiPipelineFastTests(PipelineTesterMixin, FasterCacheTesterMixin, unittest.TestCase):
+class MochiPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
     pipeline_class = MochiPipeline
     params = TEXT_TO_IMAGE_PARAMS - {"cross_attention_kwargs"}
     batch_params = TEXT_TO_IMAGE_BATCH_PARAMS
@@ -56,16 +53,14 @@ class MochiPipelineFastTests(PipelineTesterMixin, FasterCacheTesterMixin, unitte
         ]
     )
     test_xformers_attention = False
-    test_layerwise_casting = True
-    test_group_offloading = True
 
-    def get_dummy_components(self, num_layers: int = 2):
+    def get_dummy_components(self):
         torch.manual_seed(0)
         transformer = MochiTransformer3DModel(
             patch_size=2,
             num_attention_heads=2,
             attention_head_dim=8,
-            num_layers=num_layers,
+            num_layers=2,
             pooled_projection_dim=16,
             in_channels=12,
             out_channels=None,
@@ -265,28 +260,26 @@ class MochiPipelineFastTests(PipelineTesterMixin, FasterCacheTesterMixin, unitte
         )
 
 
-@nightly
-@require_torch_accelerator
-@require_big_accelerator
-@pytest.mark.big_accelerator
+@slow
+@require_torch_gpu
 class MochiPipelineIntegrationTests(unittest.TestCase):
     prompt = "A painting of a squirrel eating a burger."
 
     def setUp(self):
         super().setUp()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def tearDown(self):
         super().tearDown()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def test_mochi(self):
         generator = torch.Generator("cpu").manual_seed(0)
 
         pipe = MochiPipeline.from_pretrained("genmo/mochi-1-preview", torch_dtype=torch.float16)
-        pipe.enable_model_cpu_offload(device=torch_device)
+        pipe.enable_model_cpu_offload()
         prompt = self.prompt
 
         videos = pipe(
@@ -300,7 +293,7 @@ class MochiPipelineIntegrationTests(unittest.TestCase):
         ).frames
 
         video = videos[0]
-        expected_video = torch.randn(1, 19, 480, 848, 3).numpy()
+        expected_video = torch.randn(1, 16, 480, 848, 3).numpy()
 
-        max_diff = numpy_cosine_similarity_distance(video.cpu(), expected_video)
+        max_diff = numpy_cosine_similarity_distance(video, expected_video)
         assert max_diff < 1e-3, f"Max diff is too high. got {video}"

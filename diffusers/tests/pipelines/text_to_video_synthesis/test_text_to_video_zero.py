@@ -19,44 +19,37 @@ import unittest
 import torch
 
 from diffusers import DDIMScheduler, TextToVideoZeroPipeline
-from diffusers.utils.testing_utils import (
-    backend_empty_cache,
-    load_pt,
-    nightly,
-    require_torch_accelerator,
-    torch_device,
-)
+from diffusers.utils.testing_utils import load_pt, nightly, require_torch_gpu
 
 from ..test_pipelines_common import assert_mean_pixel_difference
 
 
 @nightly
-@require_torch_accelerator
+@require_torch_gpu
 class TextToVideoZeroPipelineSlowTests(unittest.TestCase):
     def setUp(self):
         # clean up the VRAM before each test
         super().setUp()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def tearDown(self):
         # clean up the VRAM after each test
         super().tearDown()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def test_full_model(self):
         model_id = "stable-diffusion-v1-5/stable-diffusion-v1-5"
-        pipe = TextToVideoZeroPipeline.from_pretrained(model_id, torch_dtype=torch.float16).to(torch_device)
+        pipe = TextToVideoZeroPipeline.from_pretrained(model_id, torch_dtype=torch.float16).to("cuda")
         pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
-        generator = torch.Generator(device="cpu").manual_seed(0)
+        generator = torch.Generator(device="cuda").manual_seed(0)
 
         prompt = "A bear is playing a guitar on Times Square"
         result = pipe(prompt=prompt, generator=generator).images
 
         expected_result = load_pt(
-            "https://huggingface.co/datasets/hf-internal-testing/diffusers-images/resolve/main/text-to-video/A bear is playing a guitar on Times Square.pt",
-            weights_only=False,
+            "https://huggingface.co/datasets/hf-internal-testing/diffusers-images/resolve/main/text-to-video/A bear is playing a guitar on Times Square.pt"
         )
 
         assert_mean_pixel_difference(result, expected_result)

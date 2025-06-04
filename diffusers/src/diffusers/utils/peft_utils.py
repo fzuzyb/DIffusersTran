@@ -153,19 +153,19 @@ def get_peft_kwargs(rank_dict, network_alpha_dict, peft_state_dict, is_unet=True
     r = lora_alpha = list(rank_dict.values())[0]
 
     if len(set(rank_dict.values())) > 1:
-        # get the rank occurring the most number of times
+        # get the rank occuring the most number of times
         r = collections.Counter(rank_dict.values()).most_common()[0][0]
 
-        # for modules with rank different from the most occurring rank, add it to the `rank_pattern`
+        # for modules with rank different from the most occuring rank, add it to the `rank_pattern`
         rank_pattern = dict(filter(lambda x: x[1] != r, rank_dict.items()))
         rank_pattern = {k.split(".lora_B.")[0]: v for k, v in rank_pattern.items()}
 
     if network_alpha_dict is not None and len(network_alpha_dict) > 0:
         if len(set(network_alpha_dict.values())) > 1:
-            # get the alpha occurring the most number of times
+            # get the alpha occuring the most number of times
             lora_alpha = collections.Counter(network_alpha_dict.values()).most_common()[0][0]
 
-            # for modules with alpha different from the most occurring alpha, add it to the `alpha_pattern`
+            # for modules with alpha different from the most occuring alpha, add it to the `alpha_pattern`
             alpha_pattern = dict(filter(lambda x: x[1] != lora_alpha, network_alpha_dict.items()))
             if is_unet:
                 alpha_pattern = {
@@ -257,17 +257,25 @@ def set_weights_and_activate_adapters(model, adapter_names, weights):
 
         return block_weight
 
-    for module_name, module in model.named_modules():
+    # iterate over each adapter, make it active and set the corresponding scaling weight
+    for adapter_name, weight in zip(adapter_names, weights):
+        for module_name, module in model.named_modules():
+            if isinstance(module, BaseTunerLayer):
+                # For backward compatbility with previous PEFT versions
+                if hasattr(module, "set_adapter"):
+                    module.set_adapter(adapter_name)
+                else:
+                    module.active_adapter = adapter_name
+                module.set_scale(adapter_name, get_module_weight(weight, module_name))
+
+    # set multiple active adapters
+    for module in model.modules():
         if isinstance(module, BaseTunerLayer):
-            # For backward compatibility with previous PEFT versions, set multiple active adapters
+            # For backward compatbility with previous PEFT versions
             if hasattr(module, "set_adapter"):
                 module.set_adapter(adapter_names)
             else:
                 module.active_adapter = adapter_names
-
-            # Set the scaling weight for each adapter for this module
-            for adapter_name, weight in zip(adapter_names, weights):
-                module.set_scale(adapter_name, get_module_weight(weight, module_name))
 
 
 def check_peft_version(min_version: str) -> None:

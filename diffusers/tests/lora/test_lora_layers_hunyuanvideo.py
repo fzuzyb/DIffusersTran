@@ -12,12 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import gc
 import sys
 import unittest
 
-import numpy as np
-import pytest
 import torch
 from transformers import CLIPTextModel, CLIPTokenizer, LlamaModel, LlamaTokenizerFast
 
@@ -28,16 +25,9 @@ from diffusers import (
     HunyuanVideoTransformer3DModel,
 )
 from diffusers.utils.testing_utils import (
-    Expectations,
-    backend_empty_cache,
     floats_tensor,
-    nightly,
-    numpy_cosine_similarity_distance,
-    require_big_accelerator,
     require_peft_backend,
-    require_torch_accelerator,
     skip_mps,
-    torch_device,
 )
 
 
@@ -192,74 +182,3 @@ class HunyuanVideoLoRATests(unittest.TestCase, PeftLoraLoaderMixinTests):
     @unittest.skip("Text encoder LoRA is not supported in HunyuanVideo.")
     def test_simple_inference_with_text_lora_save_load(self):
         pass
-
-
-@nightly
-@require_torch_accelerator
-@require_peft_backend
-@require_big_accelerator
-@pytest.mark.big_accelerator
-class HunyuanVideoLoRAIntegrationTests(unittest.TestCase):
-    """internal note: The integration slices were obtained on DGX.
-
-    torch: 2.5.1+cu124 with CUDA 12.5. Need the same setup for the
-    assertions to pass.
-    """
-
-    num_inference_steps = 10
-    seed = 0
-
-    def setUp(self):
-        super().setUp()
-
-        gc.collect()
-        backend_empty_cache(torch_device)
-
-        model_id = "hunyuanvideo-community/HunyuanVideo"
-        transformer = HunyuanVideoTransformer3DModel.from_pretrained(
-            model_id, subfolder="transformer", torch_dtype=torch.bfloat16
-        )
-        self.pipeline = HunyuanVideoPipeline.from_pretrained(
-            model_id, transformer=transformer, torch_dtype=torch.float16
-        ).to(torch_device)
-
-    def tearDown(self):
-        super().tearDown()
-
-        gc.collect()
-        backend_empty_cache(torch_device)
-
-    def test_original_format_cseti(self):
-        self.pipeline.load_lora_weights(
-            "Cseti/HunyuanVideo-LoRA-Arcane_Jinx-v1", weight_name="csetiarcane-nfjinx-v1-6000.safetensors"
-        )
-        self.pipeline.fuse_lora()
-        self.pipeline.unload_lora_weights()
-        self.pipeline.vae.enable_tiling()
-
-        prompt = "CSETIARCANE. A cat walks on the grass, realistic"
-
-        out = self.pipeline(
-            prompt=prompt,
-            height=320,
-            width=512,
-            num_frames=9,
-            num_inference_steps=self.num_inference_steps,
-            output_type="np",
-            generator=torch.manual_seed(self.seed),
-        ).frames[0]
-        out = out.flatten()
-        out_slice = np.concatenate((out[:8], out[-8:]))
-
-        # fmt: off
-        expected_slices = Expectations(
-            {
-                ("cuda", 7): np.array([0.1013, 0.1924, 0.0078, 0.1021, 0.1929, 0.0078, 0.1023, 0.1919, 0.7402, 0.104, 0.4482, 0.7354, 0.0925, 0.4382, 0.7275, 0.0815]),
-            }
-        )
-        # fmt: on
-        expected_slice = expected_slices.get_expectation()
-
-        max_diff = numpy_cosine_similarity_distance(expected_slice.flatten(), out_slice)
-
-        assert max_diff < 1e-3

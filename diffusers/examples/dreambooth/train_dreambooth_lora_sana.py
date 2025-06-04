@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # coding=utf-8
-# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
+# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -63,7 +63,6 @@ from diffusers.utils import (
     is_wandb_available,
 )
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
-from diffusers.utils.import_utils import is_torch_npu_available
 from diffusers.utils.torch_utils import is_compiled_module
 
 
@@ -71,12 +70,9 @@ if is_wandb_available():
     import wandb
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
-check_min_version("0.34.0.dev0")
+check_min_version("0.33.0.dev0")
 
 logger = get_logger(__name__)
-
-if is_torch_npu_available():
-    torch.npu.config.allow_internal_format = False
 
 
 def save_model_card(
@@ -162,15 +158,12 @@ def log_validation(
         f"Running validation... \n Generating {args.num_validation_images} images with prompt:"
         f" {args.validation_prompt}."
     )
-    if args.enable_vae_tiling:
-        pipeline.vae.enable_tiling(tile_sample_min_height=1024, tile_sample_stride_width=1024)
-
     pipeline.text_encoder = pipeline.text_encoder.to(torch.bfloat16)
     pipeline = pipeline.to(accelerator.device)
     pipeline.set_progress_bar_config(disable=True)
 
     # run inference
-    generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed is not None else None
+    generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed else None
 
     images = [pipeline(**pipeline_args, generator=generator).images[0] for _ in range(args.num_validation_images)]
 
@@ -323,9 +316,6 @@ def parse_args(input_args=None):
         default=4,
         help=("The dimension of the LoRA update matrices."),
     )
-
-    parser.add_argument("--lora_dropout", type=float, default=0.0, help="Dropout probability for LoRA layers")
-
     parser.add_argument(
         "--with_prior_preservation",
         default=False,
@@ -516,7 +506,7 @@ def parse_args(input_args=None):
         type=str,
         default=None,
         help=(
-            'The transformer modules to apply LoRA training on. Please specify the layers in a comma separated. E.g. - "to_k,to_q,to_v" will result in lora training of attention layers only'
+            'The transformer modules to apply LoRA training on. Please specify the layers in a comma seperated. E.g. - "to_k,to_q,to_v" will result in lora training of attention layers only'
         ),
     )
 
@@ -607,8 +597,6 @@ def parse_args(input_args=None):
         help="Whether to offload the VAE and the text encoder to CPU when they are not used.",
     )
     parser.add_argument("--local_rank", type=int, default=-1, help="For distributed training: local_rank")
-    parser.add_argument("--enable_vae_tiling", action="store_true", help="Enabla vae tiling in log validation")
-    parser.add_argument("--enable_npu_flash_attention", action="store_true", help="Enabla Flash Attention for NPU")
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -932,7 +920,8 @@ def main(args):
                     image.save(image_filename)
 
             del pipeline
-            free_memory()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     # Handle the repository creation
     if accelerator.is_main_process:
@@ -995,14 +984,6 @@ def main(args):
     # because Gemma2 is particularly suited for bfloat16.
     text_encoder.to(dtype=torch.bfloat16)
 
-    if args.enable_npu_flash_attention:
-        if is_torch_npu_available():
-            logger.info("npu flash attention enabled.")
-            for block in transformer.transformer_blocks:
-                block.attn2.set_use_npu_flash_attention(True)
-        else:
-            raise ValueError("npu flash attention requires torch_npu extensions and is supported only on npu device ")
-
     # Initialize a text encoding pipeline and keep it to CPU for now.
     text_encoding_pipeline = SanaPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
@@ -1024,7 +1005,6 @@ def main(args):
     transformer_lora_config = LoraConfig(
         r=args.rank,
         lora_alpha=args.rank,
-        lora_dropout=args.lora_dropout,
         init_lora_weights="gaussian",
         target_modules=target_modules,
     )
@@ -1068,7 +1048,7 @@ def main(args):
         lora_state_dict = SanaPipeline.lora_state_dict(input_dir)
 
         transformer_state_dict = {
-            f"{k.replace('transformer.', '')}": v for k, v in lora_state_dict.items() if k.startswith("transformer.")
+            f'{k.replace("transformer.", "")}': v for k, v in lora_state_dict.items() if k.startswith("transformer.")
         }
         transformer_state_dict = convert_unet_state_dict_to_peft(transformer_state_dict)
         incompatible_keys = set_peft_model_state_dict(transformer_, transformer_state_dict, adapter_name="default")

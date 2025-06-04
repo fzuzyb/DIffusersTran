@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # coding=utf-8
-# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
+# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ import numpy as np
 import torch
 import torch.utils.checkpoint
 import transformers
-from accelerate import Accelerator, DistributedType
+from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
 from huggingface_hub import create_repo, upload_folder
@@ -72,7 +72,7 @@ if is_wandb_available():
     import wandb
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
-check_min_version("0.34.0.dev0")
+check_min_version("0.33.0.dev0")
 
 logger = get_logger(__name__)
 
@@ -199,7 +199,7 @@ def log_validation(
     pipeline.set_progress_bar_config(disable=True)
 
     # run inference
-    generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed is not None else None
+    generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed else None
     # autocast_ctx = torch.autocast(accelerator.device.type) if not is_final_validation else nullcontext()
     autocast_ctx = nullcontext()
 
@@ -367,9 +367,6 @@ def parse_args(input_args=None):
         default=4,
         help=("The dimension of the LoRA update matrices."),
     )
-
-    parser.add_argument("--lora_dropout", type=float, default=0.0, help="Dropout probability for LoRA layers")
-
     parser.add_argument(
         "--with_prior_preservation",
         default=False,
@@ -579,7 +576,7 @@ def parse_args(input_args=None):
         type=str,
         default=None,
         help=(
-            "The transformer block layers to apply LoRA training on. Please specify the layers in a comma separated string."
+            "The transformer block layers to apply LoRA training on. Please specify the layers in a comma seperated string."
             "For examples refer to https://github.com/huggingface/diffusers/blob/main/examples/dreambooth/README_SD3.md"
         ),
     )
@@ -588,7 +585,7 @@ def parse_args(input_args=None):
         type=str,
         default=None,
         help=(
-            "The transformer blocks to apply LoRA training on. Please specify the block numbers in a comma separated manner."
+            "The transformer blocks to apply LoRA training on. Please specify the block numbers in a comma seperated manner."
             'E.g. - "--lora_blocks 12,30" will result in lora training of transformer blocks 12 and 30. For more examples refer to https://github.com/huggingface/diffusers/blob/main/examples/dreambooth/README_SD3.md'
         ),
     )
@@ -1267,7 +1264,6 @@ def main(args):
     transformer_lora_config = LoraConfig(
         r=args.rank,
         lora_alpha=args.rank,
-        lora_dropout=args.lora_dropout,
         init_lora_weights="gaussian",
         target_modules=target_modules,
     )
@@ -1277,7 +1273,6 @@ def main(args):
         text_lora_config = LoraConfig(
             r=args.rank,
             lora_alpha=args.rank,
-            lora_dropout=args.lora_dropout,
             init_lora_weights="gaussian",
             target_modules=["q_proj", "k_proj", "v_proj", "out_proj"],
         )
@@ -1297,17 +1292,11 @@ def main(args):
             text_encoder_two_lora_layers_to_save = None
 
             for model in models:
-                if isinstance(unwrap_model(model), type(unwrap_model(transformer))):
-                    model = unwrap_model(model)
-                    if args.upcast_before_saving:
-                        model = model.to(torch.float32)
+                if isinstance(model, type(unwrap_model(transformer))):
                     transformer_lora_layers_to_save = get_peft_model_state_dict(model)
-                elif args.train_text_encoder and isinstance(
-                    unwrap_model(model), type(unwrap_model(text_encoder_one))
-                ):  # or text_encoder_two
+                elif isinstance(model, type(unwrap_model(text_encoder_one))):  # or text_encoder_two
                     # both text encoders are of the same class, so we check hidden size to distinguish between the two
-                    model = unwrap_model(model)
-                    hidden_size = model.config.hidden_size
+                    hidden_size = unwrap_model(model).config.hidden_size
                     if hidden_size == 768:
                         text_encoder_one_lora_layers_to_save = get_peft_model_state_dict(model)
                     elif hidden_size == 1280:
@@ -1316,8 +1305,7 @@ def main(args):
                     raise ValueError(f"unexpected save model: {model.__class__}")
 
                 # make sure to pop weight so that corresponding model is not saved again
-                if weights:
-                    weights.pop()
+                weights.pop()
 
             StableDiffusion3Pipeline.save_lora_weights(
                 output_dir,
@@ -1331,36 +1319,22 @@ def main(args):
         text_encoder_one_ = None
         text_encoder_two_ = None
 
-        if not accelerator.distributed_type == DistributedType.DEEPSPEED:
-            while len(models) > 0:
-                model = models.pop()
+        while len(models) > 0:
+            model = models.pop()
 
-                if isinstance(unwrap_model(model), type(unwrap_model(transformer))):
-                    transformer_ = unwrap_model(model)
-                elif isinstance(unwrap_model(model), type(unwrap_model(text_encoder_one))):
-                    text_encoder_one_ = unwrap_model(model)
-                elif isinstance(unwrap_model(model), type(unwrap_model(text_encoder_two))):
-                    text_encoder_two_ = unwrap_model(model)
-                else:
-                    raise ValueError(f"unexpected save model: {model.__class__}")
-
-        else:
-            transformer_ = SD3Transformer2DModel.from_pretrained(
-                args.pretrained_model_name_or_path, subfolder="transformer"
-            )
-            transformer_.add_adapter(transformer_lora_config)
-            if args.train_text_encoder:
-                text_encoder_one_ = text_encoder_cls_one.from_pretrained(
-                    args.pretrained_model_name_or_path, subfolder="text_encoder"
-                )
-                text_encoder_two_ = text_encoder_cls_two.from_pretrained(
-                    args.pretrained_model_name_or_path, subfolder="text_encoder_2"
-                )
+            if isinstance(model, type(unwrap_model(transformer))):
+                transformer_ = model
+            elif isinstance(model, type(unwrap_model(text_encoder_one))):
+                text_encoder_one_ = model
+            elif isinstance(model, type(unwrap_model(text_encoder_two))):
+                text_encoder_two_ = model
+            else:
+                raise ValueError(f"unexpected save model: {model.__class__}")
 
         lora_state_dict = StableDiffusion3Pipeline.lora_state_dict(input_dir)
 
         transformer_state_dict = {
-            f"{k.replace('transformer.', '')}": v for k, v in lora_state_dict.items() if k.startswith("transformer.")
+            f'{k.replace("transformer.", "")}': v for k, v in lora_state_dict.items() if k.startswith("transformer.")
         }
         transformer_state_dict = convert_unet_state_dict_to_peft(transformer_state_dict)
         incompatible_keys = set_peft_model_state_dict(transformer_, transformer_state_dict, adapter_name="default")
@@ -1795,7 +1769,7 @@ def main(args):
                     return_dict=False,
                 )[0]
 
-                # Follow: Section 5 of https://huggingface.co/papers/2206.00364.
+                # Follow: Section 5 of https://arxiv.org/abs/2206.00364.
                 # Preconditioning of the model outputs.
                 if args.precondition_outputs:
                     model_pred = model_pred * (-sigmas) + noisy_model_input
@@ -1855,7 +1829,7 @@ def main(args):
                 progress_bar.update(1)
                 global_step += 1
 
-                if accelerator.is_main_process or accelerator.distributed_type == DistributedType.DEEPSPEED:
+                if accelerator.is_main_process:
                     if global_step % args.checkpointing_steps == 0:
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
                         if args.checkpoints_total_limit is not None:

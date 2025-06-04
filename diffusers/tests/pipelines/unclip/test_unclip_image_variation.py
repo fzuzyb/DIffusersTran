@@ -37,13 +37,12 @@ from diffusers import (
 )
 from diffusers.pipelines.unclip.text_proj import UnCLIPTextProjModel
 from diffusers.utils.testing_utils import (
-    backend_empty_cache,
     enable_full_determinism,
     floats_tensor,
     load_image,
     load_numpy,
     nightly,
-    require_torch_accelerator,
+    require_torch_gpu,
     skip_mps,
     torch_device,
 )
@@ -67,7 +66,6 @@ class UnCLIPImageVariationPipelineFastTests(PipelineTesterMixin, unittest.TestCa
         "super_res_num_inference_steps",
     ]
     test_xformers_attention = False
-    supports_dduf = False
 
     @property
     def text_embedder_hidden_size(self):
@@ -408,7 +406,6 @@ class UnCLIPImageVariationPipelineFastTests(PipelineTesterMixin, unittest.TestCa
             pipe.super_res_first.config.sample_size,
             pipe.super_res_first.config.sample_size,
         )
-        generator = torch.Generator(device=device).manual_seed(0)
         super_res_latents = pipe.prepare_latents(
             shape, dtype=dtype, device=device, generator=generator, latents=None, scheduler=DummyScheduler()
         )
@@ -497,19 +494,19 @@ class UnCLIPImageVariationPipelineFastTests(PipelineTesterMixin, unittest.TestCa
 
 
 @nightly
-@require_torch_accelerator
+@require_torch_gpu
 class UnCLIPImageVariationPipelineIntegrationTests(unittest.TestCase):
     def setUp(self):
         # clean up the VRAM before each test
         super().setUp()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def tearDown(self):
         # clean up the VRAM after each test
         super().tearDown()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def test_unclip_image_variation_karlo(self):
         input_image = load_image(

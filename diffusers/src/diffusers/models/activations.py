@@ -24,12 +24,12 @@ from ..utils.import_utils import is_torch_npu_available, is_torch_version
 if is_torch_npu_available():
     import torch_npu
 
-ACT2CLS = {
-    "swish": nn.SiLU,
-    "silu": nn.SiLU,
-    "mish": nn.Mish,
-    "gelu": nn.GELU,
-    "relu": nn.ReLU,
+ACTIVATION_FUNCTIONS = {
+    "swish": nn.SiLU(),
+    "silu": nn.SiLU(),
+    "mish": nn.Mish(),
+    "gelu": nn.GELU(),
+    "relu": nn.ReLU(),
 }
 
 
@@ -44,10 +44,10 @@ def get_activation(act_fn: str) -> nn.Module:
     """
 
     act_fn = act_fn.lower()
-    if act_fn in ACT2CLS:
-        return ACT2CLS[act_fn]()
+    if act_fn in ACTIVATION_FUNCTIONS:
+        return ACTIVATION_FUNCTIONS[act_fn]
     else:
-        raise ValueError(f"activation function {act_fn} not found in ACT2FN mapping {list(ACT2CLS.keys())}")
+        raise ValueError(f"Unsupported activation function: {act_fn}")
 
 
 class FP32SiLU(nn.Module):
@@ -92,7 +92,7 @@ class GELU(nn.Module):
 
 class GEGLU(nn.Module):
     r"""
-    A [variant](https://huggingface.co/papers/2002.05202) of the gated linear unit activation function.
+    A [variant](https://arxiv.org/abs/2002.05202) of the gated linear unit activation function.
 
     Parameters:
         dim_in (`int`): The number of channels in the input.
@@ -125,8 +125,8 @@ class GEGLU(nn.Module):
 
 class SwiGLU(nn.Module):
     r"""
-    A [variant](https://huggingface.co/papers/2002.05202) of the gated linear unit activation function. It's similar to
-    `GEGLU` but uses SiLU / Swish instead of GeLU.
+    A [variant](https://arxiv.org/abs/2002.05202) of the gated linear unit activation function. It's similar to `GEGLU`
+    but uses SiLU / Swish instead of GeLU.
 
     Parameters:
         dim_in (`int`): The number of channels in the input.
@@ -149,7 +149,7 @@ class SwiGLU(nn.Module):
 class ApproximateGELU(nn.Module):
     r"""
     The approximate form of the Gaussian Error Linear Unit (GELU). For more details, see section 2 of this
-    [paper](https://huggingface.co/papers/1606.08415).
+    [paper](https://arxiv.org/abs/1606.08415).
 
     Parameters:
         dim_in (`int`): The number of channels in the input.

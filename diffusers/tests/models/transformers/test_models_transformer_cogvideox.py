@@ -33,7 +33,6 @@ class CogVideoXTransformerTests(ModelTesterMixin, unittest.TestCase):
     model_class = CogVideoXTransformer3DModel
     main_input_name = "hidden_states"
     uses_custom_attn_processor = True
-    model_split_percents = [0.7, 0.7, 0.8]
 
     @property
     def dummy_input(self):
@@ -72,7 +71,7 @@ class CogVideoXTransformerTests(ModelTesterMixin, unittest.TestCase):
             "out_channels": 4,
             "time_embed_dim": 2,
             "text_embed_dim": 8,
-            "num_layers": 2,
+            "num_layers": 1,
             "sample_width": 8,
             "sample_height": 8,
             "sample_frames": 8,
@@ -131,7 +130,7 @@ class CogVideoX1_5TransformerTests(ModelTesterMixin, unittest.TestCase):
             "out_channels": 4,
             "time_embed_dim": 2,
             "text_embed_dim": 8,
-            "num_layers": 2,
+            "num_layers": 1,
             "sample_width": 8,
             "sample_height": 8,
             "sample_frames": 8,

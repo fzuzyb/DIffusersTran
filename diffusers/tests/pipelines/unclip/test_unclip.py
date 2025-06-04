@@ -23,14 +23,10 @@ from transformers import CLIPTextConfig, CLIPTextModelWithProjection, CLIPTokeni
 from diffusers import PriorTransformer, UnCLIPPipeline, UnCLIPScheduler, UNet2DConditionModel, UNet2DModel
 from diffusers.pipelines.unclip.text_proj import UnCLIPTextProjModel
 from diffusers.utils.testing_utils import (
-    backend_empty_cache,
-    backend_max_memory_allocated,
-    backend_reset_max_memory_allocated,
-    backend_reset_peak_memory_stats,
     enable_full_determinism,
     load_numpy,
     nightly,
-    require_torch_accelerator,
+    require_torch_gpu,
     skip_mps,
     torch_device,
 )
@@ -307,7 +303,6 @@ class UnCLIPPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
             shape, dtype=dtype, device=device, generator=generator, latents=None, scheduler=DummyScheduler()
         )
         shape = (batch_size, decoder.config.in_channels, decoder.config.sample_size, decoder.config.sample_size)
-        generator = torch.Generator(device=device).manual_seed(0)
         decoder_latents = pipe.prepare_latents(
             shape, dtype=dtype, device=device, generator=generator, latents=None, scheduler=DummyScheduler()
         )
@@ -385,7 +380,7 @@ class UnCLIPPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
         ]
 
         self._test_inference_batch_single_identical(
-            additional_params_copy_to_batched_inputs=additional_params_copy_to_batched_inputs, expected_max_diff=9.8e-3
+            additional_params_copy_to_batched_inputs=additional_params_copy_to_batched_inputs, expected_max_diff=5e-3
         )
 
     def test_inference_batch_consistent(self):
@@ -430,13 +425,13 @@ class UnCLIPPipelineCPUIntegrationTests(unittest.TestCase):
         # clean up the VRAM before each test
         super().setUp()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def tearDown(self):
         # clean up the VRAM after each test
         super().tearDown()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def test_unclip_karlo_cpu_fp32(self):
         expected_image = load_numpy(
@@ -462,19 +457,19 @@ class UnCLIPPipelineCPUIntegrationTests(unittest.TestCase):
 
 
 @nightly
-@require_torch_accelerator
+@require_torch_gpu
 class UnCLIPPipelineIntegrationTests(unittest.TestCase):
     def setUp(self):
         # clean up the VRAM before each test
         super().setUp()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def tearDown(self):
         # clean up the VRAM after each test
         super().tearDown()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def test_unclip_karlo(self):
         expected_image = load_numpy(
@@ -500,9 +495,9 @@ class UnCLIPPipelineIntegrationTests(unittest.TestCase):
         assert_mean_pixel_difference(image, expected_image)
 
     def test_unclip_pipeline_with_sequential_cpu_offloading(self):
-        backend_empty_cache(torch_device)
-        backend_reset_max_memory_allocated(torch_device)
-        backend_reset_peak_memory_stats(torch_device)
+        torch.cuda.empty_cache()
+        torch.cuda.reset_max_memory_allocated()
+        torch.cuda.reset_peak_memory_stats()
 
         pipe = UnCLIPPipeline.from_pretrained("kakaobrain/karlo-v1-alpha", torch_dtype=torch.float16)
         pipe.set_progress_bar_config(disable=None)
@@ -518,6 +513,6 @@ class UnCLIPPipelineIntegrationTests(unittest.TestCase):
             output_type="np",
         )
 
-        mem_bytes = backend_max_memory_allocated(torch_device)
+        mem_bytes = torch.cuda.max_memory_allocated()
         # make sure that less than 7 GB is allocated
         assert mem_bytes < 7 * 10**9

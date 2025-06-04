@@ -97,7 +97,7 @@ def get_3d_sincos_pos_embed(
             The spatial dimension of positional embeddings. If an integer is provided, the same size is applied to both
             spatial dimensions (height and width).
         temporal_size (`int`):
-            The temporal dimension of positional embeddings (number of frames).
+            The temporal dimension of postional embeddings (number of frames).
         spatial_interpolation_scale (`float`, defaults to 1.0):
             Scale factor for spatial grid interpolation.
         temporal_interpolation_scale (`float`, defaults to 1.0):
@@ -139,9 +139,7 @@ def get_3d_sincos_pos_embed(
 
     # 3. Concat
     pos_embed_spatial = pos_embed_spatial[None, :, :]
-    pos_embed_spatial = pos_embed_spatial.repeat_interleave(
-        temporal_size, dim=0, output_size=pos_embed_spatial.shape[0] * temporal_size
-    )  # [T, H*W, D // 4 * 3]
+    pos_embed_spatial = pos_embed_spatial.repeat_interleave(temporal_size, dim=0)  # [T, H*W, D // 4 * 3]
 
     pos_embed_temporal = pos_embed_temporal[:, None, :]
     pos_embed_temporal = pos_embed_temporal.repeat_interleave(
@@ -169,7 +167,7 @@ def _get_3d_sincos_pos_embed_np(
             The spatial dimension of positional embeddings. If an integer is provided, the same size is applied to both
             spatial dimensions (height and width).
         temporal_size (`int`):
-            The temporal dimension of positional embeddings (number of frames).
+            The temporal dimension of postional embeddings (number of frames).
         spatial_interpolation_scale (`float`, defaults to 1.0):
             Scale factor for spatial grid interpolation.
         temporal_interpolation_scale (`float`, defaults to 1.0):
@@ -336,7 +334,7 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos, output_type="np"):
             " `from_numpy` is no longer required."
             "  Pass `output_type='pt' to use the new version now."
         )
-        deprecate("output_type=='np'", "0.34.0", deprecation_message, standard_warn=False)
+        deprecate("output_type=='np'", "0.33.0", deprecation_message, standard_warn=False)
         return get_1d_sincos_pos_embed_from_grid_np(embed_dim=embed_dim, pos=pos)
     if embed_dim % 2 != 0:
         raise ValueError("embed_dim must be divisible by 2")
@@ -1154,13 +1152,10 @@ def get_1d_rotary_pos_embed(
         / linear_factor
     )  # [D/2]
     freqs = torch.outer(pos, freqs)  # type: ignore   # [S, D/2]
-    is_npu = freqs.device.type == "npu"
-    if is_npu:
-        freqs = freqs.float()
     if use_real and repeat_interleave_real:
         # flux, hunyuan-dit, cogvideox
-        freqs_cos = freqs.cos().repeat_interleave(2, dim=1, output_size=freqs.shape[1] * 2).float()  # [S, D]
-        freqs_sin = freqs.sin().repeat_interleave(2, dim=1, output_size=freqs.shape[1] * 2).float()  # [S, D]
+        freqs_cos = freqs.cos().repeat_interleave(2, dim=1).float()  # [S, D]
+        freqs_sin = freqs.sin().repeat_interleave(2, dim=1).float()  # [S, D]
         return freqs_cos, freqs_sin
     elif use_real:
         # stable audio, allegro
@@ -1204,7 +1199,7 @@ def apply_rotary_emb(
             x_real, x_imag = x.reshape(*x.shape[:-1], -1, 2).unbind(-1)  # [B, S, H, D//2]
             x_rotated = torch.stack([-x_imag, x_real], dim=-1).flatten(3)
         elif use_real_unbind_dim == -2:
-            # Used for Stable Audio, OmniGen, CogView4 and Cosmos
+            # Used for Stable Audio
             x_real, x_imag = x.reshape(*x.shape[:-1], 2, -1).unbind(-2)  # [B, S, H, D//2]
             x_rotated = torch.cat([-x_imag, x_real], dim=-1)
         else:
@@ -1253,8 +1248,7 @@ class FluxPosEmbed(nn.Module):
         sin_out = []
         pos = ids.float()
         is_mps = ids.device.type == "mps"
-        is_npu = ids.device.type == "npu"
-        freqs_dtype = torch.float32 if (is_mps or is_npu) else torch.float64
+        freqs_dtype = torch.float32 if is_mps else torch.float64
         for i in range(n_axes):
             cos, sin = get_1d_rotary_pos_embed(
                 self.axes_dim[i],
@@ -1401,7 +1395,7 @@ class ImagePositionalEmbeddings(nn.Module):
     Converts latent image classes into vector embeddings. Sums the vector embeddings with positional embeddings for the
     height and width of the latent space.
 
-    For more details, see figure 10 of the dall-e paper: https://huggingface.co/papers/2102.12092
+    For more details, see figure 10 of the dall-e paper: https://arxiv.org/abs/2102.12092
 
     For VQ-diffusion:
 
@@ -1792,7 +1786,7 @@ class LuminaCombinedTimestepCaptionEmbedding(nn.Module):
     def forward(self, timestep, caption_feat, caption_mask):
         # timestep embedding:
         time_freq = self.time_proj(timestep)
-        time_embed = self.timestep_embedder(time_freq.to(dtype=caption_feat.dtype))
+        time_embed = self.timestep_embedder(time_freq.to(dtype=self.timestep_embedder.linear_1.weight.dtype))
 
         # caption condition embedding:
         caption_mask_float = caption_mask.float().unsqueeze(-1)
@@ -2587,11 +2581,6 @@ class MultiIPAdapterImageProjection(nn.Module):
     def __init__(self, IPAdapterImageProjectionLayers: Union[List[nn.Module], Tuple[nn.Module]]):
         super().__init__()
         self.image_projection_layers = nn.ModuleList(IPAdapterImageProjectionLayers)
-
-    @property
-    def num_ip_adapters(self) -> int:
-        """Number of IP-Adapters loaded."""
-        return len(self.image_projection_layers)
 
     def forward(self, image_embeds: List[torch.Tensor]):
         projected_image_embeds = []

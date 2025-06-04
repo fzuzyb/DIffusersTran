@@ -24,7 +24,7 @@ from diffusers import AutoencoderKL, CogVideoXDDIMScheduler, CogView3PlusPipelin
 from diffusers.utils.testing_utils import (
     enable_full_determinism,
     numpy_cosine_similarity_distance,
-    require_torch_accelerator,
+    require_torch_gpu,
     slow,
     torch_device,
 )
@@ -56,8 +56,6 @@ class CogView3PlusPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
         ]
     )
     test_xformers_attention = False
-    test_layerwise_casting = True
-    test_group_offloading = True
 
     def get_dummy_components(self):
         torch.manual_seed(0)
@@ -232,12 +230,9 @@ class CogView3PlusPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
                 "Attention slicing should not affect the inference results",
             )
 
-    def test_encode_prompt_works_in_isolation(self):
-        return super().test_encode_prompt_works_in_isolation(atol=1e-3, rtol=1e-3)
-
 
 @slow
-@require_torch_accelerator
+@require_torch_gpu
 class CogView3PlusPipelineIntegrationTests(unittest.TestCase):
     prompt = "A painting of a squirrel eating a burger."
 
@@ -255,7 +250,7 @@ class CogView3PlusPipelineIntegrationTests(unittest.TestCase):
         generator = torch.Generator("cpu").manual_seed(0)
 
         pipe = CogView3PlusPipeline.from_pretrained("THUDM/CogView3Plus-3b", torch_dtype=torch.float16)
-        pipe.enable_model_cpu_offload(device=torch_device)
+        pipe.enable_model_cpu_offload()
         prompt = self.prompt
 
         images = pipe(

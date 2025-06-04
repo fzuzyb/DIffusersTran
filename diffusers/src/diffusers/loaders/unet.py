@@ -21,6 +21,7 @@ import safetensors
 import torch
 import torch.nn.functional as F
 from huggingface_hub.utils import validate_hf_hub_args
+from torch import nn
 
 from ..models.embeddings import (
     ImageProjection,
@@ -30,7 +31,7 @@ from ..models.embeddings import (
     IPAdapterPlusImageProjection,
     MultiIPAdapterImageProjection,
 )
-from ..models.modeling_utils import _LOW_CPU_MEM_USAGE_DEFAULT, load_model_dict_into_meta, load_state_dict
+from ..models.modeling_utils import load_model_dict_into_meta, load_state_dict
 from ..utils import (
     USE_PEFT_BACKEND,
     _get_model_file,
@@ -43,10 +44,12 @@ from ..utils import (
     is_torch_version,
     logging,
 )
-from .lora_base import _func_optionally_disable_offloading
 from .lora_pipeline import LORA_WEIGHT_NAME, LORA_WEIGHT_NAME_SAFE, TEXT_ENCODER_NAME, UNET_NAME
 from .utils import AttnProcsLayers
 
+
+if is_accelerate_available():
+    from accelerate.hooks import AlignDevicesHook, CpuOffload, remove_hook_from_module
 
 logger = logging.get_logger(__name__)
 
@@ -143,7 +146,7 @@ class UNet2DConditionLoadersMixin:
         adapter_name = kwargs.pop("adapter_name", None)
         _pipeline = kwargs.pop("_pipeline", None)
         network_alphas = kwargs.pop("network_alphas", None)
-        low_cpu_mem_usage = kwargs.pop("low_cpu_mem_usage", _LOW_CPU_MEM_USAGE_DEFAULT)
+        low_cpu_mem_usage = kwargs.pop("low_cpu_mem_usage", False)
         allow_pickle = False
 
         if low_cpu_mem_usage and is_peft_version("<=", "0.13.0"):
@@ -340,17 +343,6 @@ class UNet2DConditionLoadersMixin:
                 else:
                     if is_peft_version("<", "0.9.0"):
                         lora_config_kwargs.pop("use_dora")
-
-            if "lora_bias" in lora_config_kwargs:
-                if lora_config_kwargs["lora_bias"]:
-                    if is_peft_version("<=", "0.13.2"):
-                        raise ValueError(
-                            "You need `peft` 0.14.0 at least to use `bias` in LoRAs. Please upgrade your installation of `peft`."
-                        )
-                else:
-                    if is_peft_version("<=", "0.13.2"):
-                        lora_config_kwargs.pop("lora_bias")
-
             lora_config = LoraConfig(**lora_config_kwargs)
 
             # adapter_name
@@ -408,7 +400,27 @@ class UNet2DConditionLoadersMixin:
             tuple:
                 A tuple indicating if `is_model_cpu_offload` or `is_sequential_cpu_offload` is True.
         """
-        return _func_optionally_disable_offloading(_pipeline=_pipeline)
+        is_model_cpu_offload = False
+        is_sequential_cpu_offload = False
+
+        if _pipeline is not None and _pipeline.hf_device_map is None:
+            for _, component in _pipeline.components.items():
+                if isinstance(component, nn.Module) and hasattr(component, "_hf_hook"):
+                    if not is_model_cpu_offload:
+                        is_model_cpu_offload = isinstance(component._hf_hook, CpuOffload)
+                    if not is_sequential_cpu_offload:
+                        is_sequential_cpu_offload = (
+                            isinstance(component._hf_hook, AlignDevicesHook)
+                            or hasattr(component._hf_hook, "hooks")
+                            and isinstance(component._hf_hook.hooks[0], AlignDevicesHook)
+                        )
+
+                    logger.info(
+                        "Accelerate hooks detected. Since you have called `load_lora_weights()`, the previous hooks will be first removed. Then the LoRA parameters will be loaded and the hooks will be applied again."
+                    )
+                    remove_hook_from_module(component, recurse=is_sequential_cpu_offload)
+
+        return (is_model_cpu_offload, is_sequential_cpu_offload)
 
     def save_attn_procs(
         self,
@@ -540,7 +552,7 @@ class UNet2DConditionLoadersMixin:
 
         return state_dict
 
-    def _convert_ip_adapter_image_proj_to_diffusers(self, state_dict, low_cpu_mem_usage=_LOW_CPU_MEM_USAGE_DEFAULT):
+    def _convert_ip_adapter_image_proj_to_diffusers(self, state_dict, low_cpu_mem_usage=False):
         if low_cpu_mem_usage:
             if is_accelerate_available():
                 from accelerate import init_empty_weights
@@ -753,12 +765,11 @@ class UNet2DConditionLoadersMixin:
         if not low_cpu_mem_usage:
             image_projection.load_state_dict(updated_state_dict, strict=True)
         else:
-            device_map = {"": self.device}
-            load_model_dict_into_meta(image_projection, updated_state_dict, device_map=device_map, dtype=self.dtype)
+            load_model_dict_into_meta(image_projection, updated_state_dict, device=self.device, dtype=self.dtype)
 
         return image_projection
 
-    def _convert_ip_adapter_attn_to_diffusers(self, state_dicts, low_cpu_mem_usage=_LOW_CPU_MEM_USAGE_DEFAULT):
+    def _convert_ip_adapter_attn_to_diffusers(self, state_dicts, low_cpu_mem_usage=False):
         from ..models.attention_processor import (
             IPAdapterAttnProcessor,
             IPAdapterAttnProcessor2_0,
@@ -847,14 +858,13 @@ class UNet2DConditionLoadersMixin:
                 else:
                     device = next(iter(value_dict.values())).device
                     dtype = next(iter(value_dict.values())).dtype
-                    device_map = {"": device}
-                    load_model_dict_into_meta(attn_procs[name], value_dict, device_map=device_map, dtype=dtype)
+                    load_model_dict_into_meta(attn_procs[name], value_dict, device=device, dtype=dtype)
 
                 key_id += 2
 
         return attn_procs
 
-    def _load_ip_adapter_weights(self, state_dicts, low_cpu_mem_usage=_LOW_CPU_MEM_USAGE_DEFAULT):
+    def _load_ip_adapter_weights(self, state_dicts, low_cpu_mem_usage=False):
         if not isinstance(state_dicts, list):
             state_dicts = [state_dicts]
 
