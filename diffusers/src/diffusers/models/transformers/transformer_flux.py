@@ -515,6 +515,7 @@ class FluxTransformer2DModel(
                     encoder_hidden_states,
                     temb,
                     image_rotary_emb,
+                    joint_attention_kwargs=joint_attention_kwargs,
                     **ckpt_kwargs,
                 )
 
