@@ -178,3 +178,7 @@ wandb
 /server_env
 /examples/IPAdapter/results
 /learning/input
+/samples
+*docx
+experiment
+/local_env
