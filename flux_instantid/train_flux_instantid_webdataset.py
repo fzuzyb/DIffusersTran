@@ -1453,5 +1453,7 @@ def main(args):
 
 
 if __name__ == "__main__":
+    import torch.multiprocessing as mp
+    mp.set_start_method('spawn', force=True)
     args = parse_args()
     main(args)

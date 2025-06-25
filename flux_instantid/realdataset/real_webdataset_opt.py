@@ -24,6 +24,9 @@ from transformers import AutoProcessor, AutoModelForCausalLM
 from PIL import Image
 import torch
 
+import threading
+_thread_local = threading.local()
+
 
 IV_FACE_ROOT = os.getenv("IV_FACE_ROOT","/home/user/Algo_new/DengWei/Project/StableDiffusion/ComfyUI/models/ivface")
 IMAGE2TEXT_MODEL = os.getenv("IMAGE2TEXT_MODEL","/home/user/Algo_new/Zhouyuanbo/IV_WORKING/Model/gitbase")
@@ -36,24 +39,14 @@ _global_image2text = None
 _global_face_seg = None
 
 def get_face_modules(root: str, device, use_seg_face: bool):
-    """
-    延迟初始化并缓存 FaceAlignment, FaceRecogFeatures, Image2Text, BiSeNetFaceSegModel
-    device: "cpu" 或 int GPU id
-    """
-    global _global_face_am, _global_face_features, _global_image2text, _global_face_seg
-    if _global_face_am is None:
-        # 只执行一次
+    if not hasattr(_thread_local, "modules"):
         print(">>> Loading FaceAlignment on device {}...".format(device))
-        _global_face_am = FaceAlignment(root, device=device)
-        print(">>> Loading FaceRecogFeatures on device {}...".format(device))
-        _global_face_features = FaceRecogFeatures(root, device=device)
-        print(">>> Loading Image2Text on device {}...".format(device))
-        _global_image2text = Image2Text(IMAGE2TEXT_MODEL, device=device)
-        if use_seg_face:
-            _global_face_seg = BiSeNetFaceSegModel(root, device=device)
-        else:
-            _global_face_seg = None
-    return _global_face_am, _global_face_features, _global_image2text, _global_face_seg
+        face_am = FaceAlignment(root, device=device)
+        face_features = FaceRecogFeatures(root, device=device)
+        image2text = Image2Text(IMAGE2TEXT_MODEL, device=device)
+        face_seg = BiSeNetFaceSegModel(root, device=device) if use_seg_face else None
+        _thread_local.modules = (face_am, face_features, image2text, face_seg)
+    return _thread_local.modules
 
 class Image2Text:
     def __init__(self, MODEL_ROOT, device=-1):
@@ -85,40 +78,73 @@ class Image2Text:
         # 如果只有一张图像，返回单个字符串，否则返回列表
         return captions[0] if isinstance(image, (list, tuple)) is False else captions
 
-def filter_keys(key_set):
-    def _f(dictionary):
-        return {k: v for k, v in dictionary.items() if k in key_set}
+# def filter_keys(key_set):
+#     def _f(dictionary):
+#         return {k: v for k, v in dictionary.items() if k in key_set}
+#
+#     return _f
+# 顶层定义，模块最前面
+def keep_image_text_orig_size(sample: dict) -> dict:
+    return {k: v for k, v in sample.items() if k in ("image", "text", "orig_size")}
 
-    return _f
-
+# def group_by_keys_nothrow(data, keys=base_plus_ext, lcase=True, suffixes=None, handler=None):
+#     """Return function over iterator that groups key, value pairs into samples.
+#
+#     :param keys: function that splits the key into key and extension (base_plus_ext)
+#     :param lcase: convert suffixes to lower case (Default value = True)
+#     """
+#     current_sample = None
+#     for filesample in data:
+#         assert isinstance(filesample, dict)
+#         fname, value = filesample["fname"], filesample["data"]
+#         prefix, suffix = keys(fname)
+#         if prefix is None:
+#             continue
+#         if lcase:
+#             suffix = suffix.lower()
+#         # FIXME webdataset version throws if suffix in current_sample, but we have a potential for
+#         #  this happening in the current LAION400m dataset if a tar ends with same prefix as the next
+#         #  begins, rare, but can happen since prefix aren't unique across tar files in that dataset
+#         if current_sample is None or prefix != current_sample["__key__"] or suffix in current_sample:
+#             if valid_sample(current_sample):
+#                 yield current_sample
+#             current_sample = {"__key__": prefix, "__url__": filesample["__url__"]}
+#         if suffixes is None or suffix in suffixes:
+#             current_sample[suffix] = value
+#     if valid_sample(current_sample):
+#         yield current_sample
 
 def group_by_keys_nothrow(data, keys=base_plus_ext, lcase=True, suffixes=None, handler=None):
-    """Return function over iterator that groups key, value pairs into samples.
-
-    :param keys: function that splits the key into key and extension (base_plus_ext)
-    :param lcase: convert suffixes to lower case (Default value = True)
-    """
+    """Return function over iterator that groups key, value pairs into samples, skipping malformed entries."""
     current_sample = None
     for filesample in data:
-        assert isinstance(filesample, dict)
-        fname, value = filesample["fname"], filesample["data"]
+        if not isinstance(filesample, dict):
+            continue
+        # 跳过缺少 fname 或 data 的样本
+        if "fname" not in filesample or "data" not in filesample:
+            continue
+        try:
+            fname = filesample["fname"]
+            value = filesample["data"]
+        except KeyError:
+            continue
         prefix, suffix = keys(fname)
         if prefix is None:
             continue
         if lcase:
             suffix = suffix.lower()
-        # FIXME webdataset version throws if suffix in current_sample, but we have a potential for
-        #  this happening in the current LAION400m dataset if a tar ends with same prefix as the next
-        #  begins, rare, but can happen since prefix aren't unique across tar files in that dataset
-        if current_sample is None or prefix != current_sample["__key__"] or suffix in current_sample:
-            if valid_sample(current_sample):
+        # new sample 开始
+        if current_sample is None or prefix != current_sample.get("__key__") or suffix in current_sample:
+            if current_sample is not None and valid_sample(current_sample):
                 yield current_sample
-            current_sample = {"__key__": prefix, "__url__": filesample["__url__"]}
+            # 初始化新的 sample，保留 __url__ 供后续使用
+            current_sample = {"__key__": prefix, "__url__": filesample.get("__url__", None)}
+        # 只保留需要的后缀
         if suffixes is None or suffix in suffixes:
             current_sample[suffix] = value
-    if valid_sample(current_sample):
+    # 最后一批
+    if current_sample is not None and valid_sample(current_sample):
         yield current_sample
-
 
 def tarfile_to_samples_nothrow(src, handler=wds.warn_and_continue):
     # NOTE this is a re-impl of the webdataset impl with group_by_keys that doesn't throw
@@ -183,42 +209,46 @@ def face_process(
     face_am, face_features, image2text, face_seg = get_face_modules(
         iv_face_root, device, use_seg_face
     )
+    try:
+        image = example["image"]
+        image = ((image.numpy().transpose(1, 2, 0) * 0.5 + 0.5) * 255).astype(np.uint8)[:, :, (2, 1, 0)]  # bgr
+        faces, tfs = face_am.forward(image)
+        img_abslms = face_am.img_abslms
+        text = image2text.forward(image)
+        if len(faces) != 1:
+            example['is_valid'] = False
+        else:
+            face = faces[0]
+            example['is_valid'] = True
 
-    image = example["image"]
-    image = ((image.numpy().transpose(1, 2, 0) * 0.5 + 0.5) * 255).astype(np.uint8)[:, :, (2, 1, 0)]  # bgr
-    faces, tfs = face_am.forward(image)
-    img_abslms = face_am.img_abslms
-    text = image2text.forward(image)
-    if len(faces) != 1:
-        example['is_valid'] = False
-    else:
-        face = faces[0]
-        example['is_valid'] = True
+            # get kpimage
+            for j in range(len(img_abslms)):
+                kpimg = get_kp_image(img_abslms[j])
+            kpimg = img2tensor(cv2.resize(kpimg, dsize=(face_shape, face_shape), interpolation=cv2.INTER_LANCZOS4))
+            example["image_kp"] = kpimg  # Tensor 3,FACE_SHAPE,FACE_SHAPE
 
-        # get kpimage
-        for j in range(len(img_abslms)):
-            kpimg = get_kp_image(img_abslms[j])
-        kpimg = img2tensor(cv2.resize(kpimg, dsize=(face_shape, face_shape), interpolation=cv2.INTER_LANCZOS4))
-        example["image_kp"] = kpimg  # Tensor 3,FACE_SHAPE,FACE_SHAPE
+            # get face embedding
+            feature = face_features.forward([image], [img_abslms])
+            example["face_id_embed"] = torch.from_numpy(feature)
 
-        # get face embedding
-        feature = face_features.forward([image], [img_abslms])
-        example["face_id_embed"] = torch.from_numpy(feature)
+            if face_seg:
+                face = cv2.resize(face, dsize=(512, 512), interpolation=cv2.INTER_CUBIC)
+                outimg = np.ones_like(face) * 255
+                mask = face_seg.forward(face)
+                mask = np.repeat(mask[:, :, None], 3, axis=2)
+                face = face * mask + (1 - mask) * outimg
+            face = img2tensor(
+                cv2.resize(face, dsize=(face_shape, face_shape), interpolation=cv2.INTER_CUBIC))  # To RGB # TO -1~1
+            example["image_face"] = face  # Tensor 3,FACE_SHAPE,FACE_SHAPE
 
-        if face_seg:
-            face = cv2.resize(face, dsize=(512, 512), interpolation=cv2.INTER_CUBIC)
-            outimg = np.ones_like(face) * 255
-            mask = face_seg.forward(face)
-            mask = np.repeat(mask[:, :, None], 3, axis=2)
-            face = face * mask + (1 - mask) * outimg
-        face = img2tensor(
-            cv2.resize(face, dsize=(face_shape, face_shape), interpolation=cv2.INTER_CUBIC))  # To RGB # TO -1~1
-        example["image_face"] = face  # Tensor 3,FACE_SHAPE,FACE_SHAPE
-
-        example['text'] = text
+            example['text'] = text
+            return example
+    except Exception as e:
+        print(f"[FaceProcess] Error: {e} -> skipping this sample.")
+        return None  # 会在 WebDataset pipeline 中被跳过
 
 
-    return example
+
 
 def draw_kps(kps, color_list=[(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255)]):
     stickwidth = 4
@@ -295,6 +325,9 @@ def collate_fn(data):
     }
 
 
+def get_orig_size(json):
+    return (int(json.get("width", 0.0)), int(json.get("height", 0.0)))
+
 class Text2ImageDataset:
     def __init__(
             self,
@@ -315,8 +348,7 @@ class Text2ImageDataset:
             # flatten list using itertools
             train_shards_path_or_url = list(itertools.chain.from_iterable(train_shards_path_or_url))
 
-        def get_orig_size(json):
-            return (int(json.get("width", 0.0)), int(json.get("height", 0.0)))
+
 
         image_transform = functools.partial(
             whole_image_transform, resolution=resolution
@@ -345,8 +377,7 @@ class Text2ImageDataset:
                 orig_size="json",
                 handler=wds.warn_and_continue,
             ),
-            wds.map(filter_keys({"image", "text", "orig_size"})),
-
+            wds.map(keep_image_text_orig_size),
             wds.map_dict(orig_size=get_orig_size),
             wds.map(image_transform),
             wds.map(face_det_transform),
@@ -428,8 +459,8 @@ class Text2ImageDatasetLoader:
             batch_size=None,
             shuffle=False,
             num_workers=num_workers,
-            pin_memory=False,
-            persistent_workers=False,
+            pin_memory=True,
+            persistent_workers=True,
         )
         num_worker_batches = math.ceil(self.number_examples / (global_batch_size * num_workers))  # per dataloader worker
         num_batches = num_worker_batches * num_workers
